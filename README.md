@@ -43,6 +43,18 @@ De STL-export maakt een grondplaat met de straten, het symbool en het onderschri
 als verhoogd reliëf. Instelbaar: dikte grondplaat, hoogte van het reliëf en de
 breedte van de dunste straat (houd die minstens ~2× je nozzle, anders print hij niet).
 
+### Twee kleuren (AMS)
+
+Zet **2 kleuren** aan en je krijgt twee knoppen: `_1_plaat.stl` en `_2_straten.stl`.
+Beide staan in dezelfde coördinaten en sluiten exact op elkaar aan op de bovenkant
+van de plaat — geen overlappende volumes, zodat elk filament z’n eigen gebied heeft.
+
+In Bambu Studio: laad bestand 1, rechtsklik op het object → *Onderdeel toevoegen →
+bestand laden* → bestand 2, en wijs per onderdeel een filament toe.
+
+Elk bestand heeft een eigen knop omdat browsers een tweede automatische download
+blokkeren.
+
 De onderdelen zijn losse gesloten volumes die elkaar overlappen; slicers voegen die
 vanzelf samen. Het reliëf zakt 0,2 mm in de plaat zodat er altijd overlap is, en
 uitsteeksels worden op de plaat teruggeklemd zodat er niets in de lucht hangt.

@@ -185,7 +185,12 @@
       <input id="roadMm" type="range" min="0.4" max="2" step="0.1" value="0.8">
       <output id="roadOut">0.8 mm</output>
     </div>
-    <button id="dlstl" class="ghost" style="margin-top:10px" disabled>STL downloaden</button>
+    <label class="check" style="margin-top:10px"><input type="checkbox" id="twocolor"> 2 kleuren (AMS): plaat en straten apart</label>
+    <button id="dlstl" class="ghost" style="margin-top:4px" disabled>STL downloaden</button>
+    <div class="row" id="stl2" style="margin-top:4px; display:none">
+      <button id="dlplate"  class="ghost" disabled>1 · plaat</button>
+      <button id="dlrelief" class="ghost" disabled>2 · straten</button>
+    </div>
     <div id="stlinfo" class="status" style="margin-top:6px"></div>
 
 
@@ -995,6 +1000,7 @@ function render(){
   stage.innerHTML = "";
   stage.appendChild(svg);
   $("dl").disabled = false; $("dlstl").disabled = false;
+  $("dlplate").disabled = false; $("dlrelief").disabled = false;
 }
 
 // ---- Main action ----
@@ -1128,8 +1134,9 @@ function stlBinary(tris){
   return buf;
 }
 
-function buildSTL(){
+function buildSTL(part){          // "all" | "plate" | "relief"
   if(!lastGeom) return null;
+  part = part || "all";
   const {fmt, circle, streets, symPts, capSegs} = lastGeom;
   const k = 1/fmt.unitsPerMm;                      // viewBox units → mm
   const P = p => [p[0]*k, (VBH-p[1])*k];           // flip Y so north points up
@@ -1137,6 +1144,7 @@ function buildSTL(){
   const relief = +$("reliefMm").value;
   const roadW  = +$("roadMm").value;
   const zTop   = baseT + relief;
+  const sink   = part==="all" ? SINK : 0;   // overlap only makes sense in one colour
   const tris   = [];
   // keeps raised detail on the plate (see addBar)
   const cR = circle ? clipR()*k : 0, cCx = VBW/2*k, cCy = VBH/2*k;
@@ -1146,6 +1154,7 @@ function buildSTL(){
     : (q => [Math.min(Math.max(q[0],0),fmt.w), Math.min(Math.max(q[1],0),fmt.h)]);
 
   // base plate
+  if(part!=="relief"){
   if(circle){
     const r=clipR()*k, cx=VBW/2*k, cy=VBH/2*k, N=180, ring=[];
     for(let i=0;i<N;i++){
@@ -1156,18 +1165,21 @@ function buildSTL(){
   }else{
     addExtrusion(tris, [[0,0],[fmt.w,0],[fmt.w,fmt.h],[0,fmt.h]], 0, baseT);
   }
+  }
 
   // streets, thicker for the bigger road classes
+  if(part!=="plate"){
   for(const grp of streets){
     const w = Math.min(roadW * (grp.rel/0.7), roadW*3);
     for(const line of grp.polys){
-      for(let i=0;i+1<line.length;i++) addBar(tris, P(line[i]), P(line[i+1]), w, baseT-SINK, zTop, clamp);
+      for(let i=0;i+1<line.length;i++) addBar(tris, P(line[i]), P(line[i+1]), w, baseT-sink, zTop, clamp);
     }
   }
   // symbol as a solid block
-  if(symPts) addExtrusion(tris, symPts.map(P), baseT-SINK, zTop);
+  if(symPts) addExtrusion(tris, symPts.map(P), baseT-sink, zTop);
   // caption strokes
-  if(capSegs) for(const s of capSegs) addBar(tris, P(s[0]), P(s[1]), roadW, baseT-SINK, zTop, clamp);
+  if(capSegs) for(const s of capSegs) addBar(tris, P(s[0]), P(s[1]), roadW, baseT-sink, zTop, clamp);
+  }
 
   return {buf: stlBinary(tris), count: tris.length};
 }
@@ -1195,29 +1207,46 @@ $("dl").onclick = () => {
   const out = $(id.replace("Mm","Out"));
   $(id).oninput = e => out.textContent = (+e.target.value).toFixed(1)+" mm";
 });
-$("dlstl").onclick = () => {
+// Chrome blocks a second automatic download, so in two-colour mode each part
+// gets its own button: one click, one file, no "allow multiple downloads" prompt.
+function stlName(suffix){
+  const base = ($("place").value.trim().split(",")[0] || "kaart")
+                 .replace(/[^\w\- ]/g,"").replace(/\s+/g,"_");
+  return base + suffix + ".stl";
+}
+function saveSTL(part, suffix){
   if(!lastGeom) return;
   $("stlinfo").textContent = "STL bouwen…"; $("stlinfo").className = "status";
   setTimeout(()=>{
     try{
       const t0 = performance.now();
-      const {buf, count} = buildSTL();
-      const mb = buf.byteLength/1048576;
+      const {buf, count} = buildSTL(part);
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([buf], {type:"model/stl"}));
-      const name = ($("place").value.trim().split(",")[0] || "kaart")
-                     .replace(/[^\w\- ]/g,"").replace(/\s+/g,"_");
-      a.download = name + "_map.stl";
+      a.download = stlName(suffix);
       a.click();
-      URL.revokeObjectURL(a.href);
-      $("stlinfo").textContent =
-        `${count.toLocaleString("nl")} driehoeken · ${mb.toFixed(1)} MB · ${Math.round(performance.now()-t0)} ms`;
+      setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+      const mb = buf.byteLength/1048576;
+      $("stlinfo").textContent = a.download + " · " + count.toLocaleString("nl") +
+        " driehoeken · " + mb.toFixed(1) + " MB · " + Math.round(performance.now()-t0) + " ms";
       $("stlinfo").className = mb > 150 ? "status err" : "status ok";
       if(mb > 150) $("stlinfo").textContent += " — erg groot, kleinere straal helpt";
     }catch(err){
-      $("stlinfo").textContent = "STL mislukt: "+err.message;
+      $("stlinfo").textContent = "STL mislukt: " + err.message;
       $("stlinfo").className = "status err";
     }
   }, 20);
+}
+$("twocolor").onchange = () => {
+  const two = $("twocolor").checked;
+  $("stl2").style.display  = two ? "flex" : "none";
+  $("dlstl").style.display = two ? "none" : "block";
+  $("stlinfo").textContent = two
+    ? "Laad in Bambu Studio bestand 1, rechtsklik → Onderdeel toevoegen → bestand 2."
+    : "";
+  $("stlinfo").className = "status";
 };
+$("dlstl").onclick   = () => saveSTL("all",    "_map");
+$("dlplate").onclick = () => saveSTL("plate",  "_1_plaat");
+$("dlrelief").onclick= () => saveSTL("relief", "_2_straten");
 </script>
