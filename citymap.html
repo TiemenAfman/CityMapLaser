@@ -1,0 +1,1023 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>City Map → SVG (laser)</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232d; --line:#2a333f;
+    --text:#e6edf3; --muted:#8b98a5; --accent:#3fb950; --accent2:#2ea043;
+    --danger:#f85149;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;
+    background:var(--bg); color:var(--text);
+    display:flex; height:100vh; overflow:hidden;
+  }
+  /* ---- Sidebar ---- */
+  aside{
+    width:320px; flex:0 0 320px; background:var(--panel);
+    border-right:1px solid var(--line); padding:18px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:16px;
+  }
+  h1{font-size:16px; margin:0; letter-spacing:.3px}
+  h1 span{color:var(--accent)}
+  .sub{color:var(--muted); font-size:12px; margin-top:-8px}
+  label{display:block; font-size:12px; color:var(--muted); margin-bottom:5px}
+  input[type=text], select{
+    width:100%; padding:9px 10px; background:var(--panel2); color:var(--text);
+    border:1px solid var(--line); border-radius:7px; font-size:14px;
+  }
+  input[type=text]:focus, select:focus{outline:none; border-color:var(--accent)}
+  .row{display:flex; gap:8px}
+  .row > *{flex:1}
+  .field{margin-bottom:2px}
+  button{
+    width:100%; padding:10px; border:0; border-radius:7px; cursor:pointer;
+    background:var(--accent2); color:#fff; font-weight:600; font-size:14px;
+  }
+  button:hover{background:var(--accent)}
+  button.ghost{background:var(--panel2); color:var(--text); border:1px solid var(--line)}
+  button.ghost:hover{border-color:var(--accent)}
+  button:disabled{opacity:.5; cursor:not-allowed}
+  .range{display:flex; align-items:center; gap:10px}
+  .range input[type=range]{flex:1}
+  .range output{width:52px; text-align:right; color:var(--text); font-variant-numeric:tabular-nums}
+  .check{display:flex; align-items:center; gap:8px; margin:6px 0; color:var(--text); font-size:13px; cursor:pointer}
+  .check input{width:16px;height:16px;accent-color:var(--accent);margin:0}
+  fieldset{border:1px solid var(--line); border-radius:8px; padding:12px; margin:0}
+  legend{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.5px; padding:0 6px}
+  .status{font-size:12px; color:var(--muted); min-height:18px}
+  .status.err{color:var(--danger)}
+  .status.ok{color:var(--accent)}
+  /* ---- Map area ---- */
+  main{flex:1; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden; background:#0a0d11}
+  #stage{width:100%; height:100%; display:flex; align-items:center; justify-content:center}
+  /* the SVG carries its own aspect (viewBox + mm size); just bound it */
+  #stage svg{max-width:88%; max-height:90vh; width:auto; height:auto;
+             box-shadow:0 0 0 1px var(--line), 0 20px 60px rgba(0,0,0,.5)}
+  #hint{position:absolute; color:var(--muted); font-size:14px; text-align:center; pointer-events:none}
+  #spinner{
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(10,13,17,.65); flex-direction:column; gap:14px; z-index:5;
+  }
+  #spinner.on{display:flex}
+  .dots{width:44px;height:44px;border:4px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .foot{color:var(--muted); font-size:11px; margin-top:auto; line-height:1.5}
+  .foot a{color:var(--muted)}
+</style>
+
+<aside>
+  <div>
+    <h1>City Map <span>→ SVG</span></h1>
+    <div class="sub">Zwart-wit stratenkaart om te laseren</div>
+  </div>
+
+  <div class="field">
+    <label>Adres / plaats / dorp</label>
+    <div class="row">
+      <input id="place" type="text" placeholder="bv. Hoofdstraat 12, Leek" style="flex:2">
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Straal rond het midden</label>
+    <div class="range">
+      <input id="radius" type="range" min="0.3" max="15" step="0.1" value="3">
+      <output id="radiusOut">3.0 km</output>
+    </div>
+  </div>
+
+  <button id="go">Kaart ophalen</button>
+  <div id="status" class="status"></div>
+
+  <fieldset>
+    <legend>Lagen</legend>
+    <label class="check"><input type="checkbox" id="minor" checked> Kleine straten &amp; paden</label>
+    <label class="check"><input type="checkbox" id="rail"> Spoorlijnen</label>
+    <label class="check"><input type="checkbox" id="water"> Water (rivieren/kanalen)</label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Stijl</legend>
+    <label class="check" style="margin-top:0"><input type="checkbox" id="circle"> Ronde uitsnede</label>
+    <label class="check"><input type="checkbox" id="invert"> Wit op zwart</label>
+    <label class="check"><input type="checkbox" id="weighted" checked> Dikte per wegtype</label>
+    <label style="margin-top:10px">Lijndikte</label>
+    <div class="range">
+      <input id="thick" type="range" min="0.2" max="4" step="0.1" value="1">
+      <output id="thickOut">1.0</output>
+    </div>
+    <label class="check" style="margin-top:12px"><input type="checkbox" id="house" checked> Symbool op adres</label>
+    <select id="symbol" style="margin-top:4px">
+      <option value="house">Huisje</option>
+      <option value="star">Sterretje</option>
+      <option value="heart">Hartje</option>
+    </select>
+    <label class="check" style="margin-top:6px"><input type="checkbox" id="invsym"> Straten omkeren onder symbool</label>
+    <label style="margin-top:6px">Grootte symbool</label>
+    <div class="range">
+      <input id="housesize" type="range" min="10" max="140" step="2" value="30">
+      <output id="houseOut">30</output>
+    </div>
+    <label style="margin-top:6px">Arceerafstand</label>
+    <div class="range">
+      <input id="hatchmm" type="range" min="0.1" max="1.5" step="0.05" value="0.4">
+      <output id="hatchOut">0.40 mm</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Onderschrift</legend>
+    <label class="check" style="margin-top:0"><input type="checkbox" id="showname" checked> Plaatsnaam / adres</label>
+    <input id="customtext" type="text" placeholder="of eigen tekst: Home Sweet Home" style="margin:2px 0 4px">
+    <label class="check"><input type="checkbox" id="showcoords" checked> Co&ouml;rdinaten</label>
+    <label class="check" style="margin-top:6px"><input type="checkbox" id="masktext" checked> Straten maskeren rond tekst</label>
+    <label style="margin-top:8px">Uitlijning</label>
+    <select id="align">
+      <option value="left">Linksonder</option>
+      <option value="center" selected>Gecentreerd</option>
+    </select>
+    <label style="margin-top:8px">Tekstgrootte</label>
+    <div class="range">
+      <input id="capmm" type="range" min="2" max="10" step="0.5" value="8">
+      <output id="capOut">8.0 mm</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Export</legend>
+    <label class="check" style="margin-top:0"><input type="checkbox" id="optimise" checked> Transportbewegingen optimaliseren</label>
+    <label class="check"><input type="checkbox" id="frame"> Kaderlijn meelaseren (snijlijn)</label>
+    <label style="margin-top:8px">Formaat — breedte × hoogte (mm)</label>
+    <div class="row">
+      <input id="wmm" type="text" value="145" title="Breedte in mm">
+      <input id="hmm" type="text" value="330" title="Hoogte in mm">
+    </div>
+    <label style="margin-top:8px">Overpass-server</label>
+    <select id="server" title="Overpass-server">
+      <option value="https://overpass-api.de/api/interpreter">overpass.de (snelst)</option>
+      <option value="https://maps.mail.ru/osm/tools/overpass/api/interpreter">mail.ru</option>
+    </select>
+    <label style="margin-top:8px">Time-out per server</label>
+    <div class="range">
+      <input id="timeout" type="range" min="5" max="180" step="5" value="60">
+      <output id="timeoutOut">60 s</output>
+    </div>
+    <button id="dl" class="ghost" style="margin-top:10px" disabled>SVG downloaden</button>
+  </fieldset>
+
+  <div class="foot">
+    Data © OpenStreetMap-bijdragers (ODbL).<br>
+    Lokaal bestand — data komt live van Nominatim &amp; Overpass.
+  </div>
+</aside>
+
+<main>
+  <div id="hint">Typ een plaats en klik <b>Kaart ophalen</b></div>
+  <div id="stage"></div>
+  <div id="spinner"><div class="dots"></div><div id="spinText">Bezig…</div></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+let lastData = null;      // {ways:[{cls, pts:[[lat,lon]..]}], center, radiusM}
+const VB = 1000;          // viewBox units along the LONGEST side
+let VBW = 1000, VBH = 1000;   // actual viewBox, derived from the mm format
+// Read the mm format and set the viewBox aspect to match the board.
+function readFormat(){
+  const w = Math.max(parseFloat($("wmm").value)||145, 1);
+  const h = Math.max(parseFloat($("hmm").value)||330, 1);
+  if(w>=h){ VBW=VB; VBH=VB*h/w; } else { VBH=VB; VBW=VB*w/h; }
+  return {w, h, unitsPerMm: VBW/w};
+}
+const clipR  = () => Math.min(VBW,VBH)/2;   // round cut-out fits the short side
+
+// ---- UI wiring ----
+function updateRadiusOut(){
+  readFormat();
+  const {halfW, halfH} = halfExtents(+$("radius").value);
+  $("radiusOut").textContent = (2*halfW).toFixed(1)+" × "+(2*halfH).toFixed(1)+" km";
+}
+$("radius").oninput = () => { updateRadiusOut(); };
+$("thick").oninput  = e => { $("thickOut").textContent = (+e.target.value).toFixed(1); if(lastData) render(); };
+$("housesize").oninput = e => { $("houseOut").textContent = e.target.value; if(lastData) render(); };
+$("hatchmm").oninput = e => { $("hatchOut").textContent = (+e.target.value).toFixed(2)+" mm"; if(lastData) render(); };
+$("capmm").oninput = e => { $("capOut").textContent = (+e.target.value).toFixed(1)+" mm"; if(lastData) render(); };
+$("customtext").oninput = () => { if(lastData) render(); };
+["circle","invert","weighted","house","symbol","showname","showcoords","frame","align","invsym","masktext","optimise"].forEach(id => $(id).onchange = () => { if(lastData) render(); });
+["wmm","hmm"].forEach(id => $(id).oninput = () => { updateRadiusOut(); if(lastData) render(); });
+$("timeout").oninput = e => $("timeoutOut").textContent = e.target.value+" s";
+$("place").addEventListener("keydown", e => { if(e.key==="Enter") $("go").click(); });
+updateRadiusOut();   // show the real km span for the default board size
+
+function setStatus(msg, kind=""){ const s=$("status"); s.textContent=msg; s.className="status "+kind; }
+function spin(on, text){ $("spinner").classList.toggle("on", on); if(text) $("spinText").textContent=text; }
+
+// ---- Road classification -> relative weight ----
+function classOf(tags){
+  const h = tags.highway;
+  if(tags.railway) return "rail";
+  if(tags.waterway || tags.natural==="water") return "water";
+  if(["motorway","trunk","motorway_link","trunk_link"].includes(h)) return "major";
+  if(["primary","secondary","primary_link","secondary_link"].includes(h)) return "primary";
+  if(["tertiary","tertiary_link","unclassified","residential","living_street"].includes(h)) return "street";
+  return "minor"; // service, footway, path, cycleway, track, pedestrian...
+}
+const MINOR_SET = new Set(["minor"]);
+const WEIGHT = { major:2.6, primary:1.9, street:1.2, minor:0.7, rail:1.0, water:1.4 };
+
+// ---- Geocode via Nominatim ----
+async function geocode(q){
+  const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(q);
+  const r = await fetch(url, { headers:{ "Accept-Language":"nl" } });
+  if(!r.ok) throw new Error("Nominatim: "+r.status);
+  const j = await r.json();
+  if(!j.length) throw new Error("Plaats niet gevonden");
+  return { lat:+j[0].lat, lon:+j[0].lon, name:j[0].display_name };
+}
+
+// ---- Overpass query ----
+function buildQuery(lat, lon, radiusM, opts, timeoutS){
+  const parts = [];
+  if(opts.minor) parts.push(`way["highway"](around:${radiusM},${lat},${lon});`);
+  else parts.push(`way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|pedestrian)(_link)?$"](around:${radiusM},${lat},${lon});`);
+  if(opts.rail)  parts.push(`way["railway"~"^(rail|light_rail|subway|tram|narrow_gauge)$"](around:${radiusM},${lat},${lon});`);
+  if(opts.water){ parts.push(`way["waterway"~"^(river|canal|stream)$"](around:${radiusM},${lat},${lon});`);
+                  parts.push(`way["natural"="water"](around:${radiusM},${lat},${lon});`); }
+  // Tell Overpass how long it may spend too, otherwise the server gives up
+  // before our own timeout does.
+  return `[out:json][timeout:${timeoutS}];(${parts.join("")});out geom;`;
+}
+
+// Only mirrors that actually answer for Europe. Region-limited mirrors (e.g.
+// overpass.osm.ch = Switzerland only) are deliberately NOT here: they return
+// HTTP 200 with zero ways, which looks like success but yields an empty map.
+const OVERPASS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+];
+
+async function fetchRoads(lat, lon, radiusM, opts){
+  const timeoutS = Math.max(parseInt($("timeout").value,10)||60, 5);
+  const q = buildQuery(lat, lon, radiusM, opts, timeoutS);
+  // Try the chosen server first, then fail over to the rest.
+  const chosen = $("server").value;
+  const servers = [chosen, ...OVERPASS.filter(s => s !== chosen)];
+  let lastErr = null, j = null;
+  for(let i=0; i<servers.length; i++){
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), timeoutS*1000);
+    try{
+      spin(true, `Wegen ophalen… (server ${i+1}/${servers.length}, max ${timeoutS}s)`);
+      const r = await fetch(servers[i], { method:"POST", body:"data="+encodeURIComponent(q), signal:ctrl.signal });
+      if(r.status===429 || r.status===504 || r.status===503){ lastErr = new Error("HTTP "+r.status+" (server druk)"); continue; }
+      if(!r.ok){ lastErr = new Error("HTTP "+r.status); continue; }
+      const cand = await r.json();
+      // A mirror can answer 200 with nothing (regional extract / wrong area).
+      // Treat that as a failure so we move on instead of showing an empty map.
+      if(!cand.elements || !cand.elements.length){ lastErr = new Error("0 resultaten van deze server"); continue; }
+      j = cand;
+      break;
+    }catch(e){
+      lastErr = e.name==="AbortError" ? new Error(`timeout na ${timeoutS}s`)
+              : (e instanceof TypeError ? new Error("geblokkeerd/geen verbinding (browser of firewall)") : e);
+    }
+    finally{ clearTimeout(timer); }
+  }
+  if(!j){
+    const hint = /geblokkeerd/.test(lastErr&&lastErr.message||"")
+      ? " — dit is géén serverprobleem: de browser mag de aanvraag niet doen. Start de tool via start-citymap.cmd."
+      : " — probeer straks opnieuw of verhoog de time-out.";
+    throw new Error("Ophalen mislukt ("+(lastErr&&lastErr.message)+")"+hint);
+  }
+  const ways = [];
+  for(const el of j.elements){
+    if(el.type!=="way" || !el.geometry) continue;
+    ways.push({ cls: classOf(el.tags||{}), pts: el.geometry.map(g=>[g.lat, g.lon]) });
+  }
+  return ways;
+}
+
+// ---- Projection (web mercator, rectangular bounds matching the board) ----
+// radiusM = half of the LONGEST side; the short side follows the aspect ratio.
+function halfExtents(radiusM){
+  return { halfW: VBW>=VBH ? radiusM : radiusM*(VBW/VBH),
+           halfH: VBH>=VBW ? radiusM : radiusM*(VBH/VBW) };
+}
+function makeProjector(lat, lon, radiusM){
+  const {halfW, halfH} = halfExtents(radiusM);
+  const dLat = halfH/111320;
+  const dLon = halfW/(111320*Math.cos(lat*Math.PI/180));
+  // Web-mercator: BOTH axes in radians so scales match (mixing degrees with
+  // mercator-Y squashes the map into a line).
+  const toRad = d => d*Math.PI/180;
+  const mercY = la => Math.log(Math.tan(Math.PI/4 + la*Math.PI/360));
+  const x0 = toRad(lon-dLon), x1 = toRad(lon+dLon);
+  const y0 = mercY(lat-dLat), y1 = mercY(lat+dLat);
+  const s  = Math.min(VBW/(x1-x0), VBH/(y1-y0)); // uniform scale keeps shape
+  const ox = (VBW - s*(x1-x0))/2;
+  const oy = (VBH - s*(y1-y0))/2;
+  return (la, lo) => [ ox + (toRad(lo)-x0)*s, VBH - (oy + (mercY(la)-y0)*s) ];
+}
+
+// ---- Symbol outlines as point arrays [[x,y],...], centred on (cx,cy) ----
+function housePoints(cx, cy, size){
+  const h=size, w=size*0.92;
+  const top=cy-h/2, base=cy-h*0.12, bot=cy+h/2;
+  const we=w/2, ww=w*0.34;
+  return [[cx,top],[cx+we,base],[cx+ww,base],[cx+ww,bot],[cx-ww,bot],[cx-ww,base],[cx-we,base]];
+}
+function starPoints(cx, cy, size){
+  const outer=size/2, inner=outer*0.42, pts=[];
+  for(let i=0;i<10;i++){
+    const r=i%2?inner:outer, a=-Math.PI/2 + i*Math.PI/5;
+    pts.push([cx+r*Math.cos(a), cy+r*Math.sin(a)]);
+  }
+  return pts;
+}
+// Heart from the classic parametric curve, sampled into a polygon so it can be
+// hatched and used for inside/outside tests like the other symbols.
+function heartPoints(cx, cy, size, n=140){
+  const raw=[];
+  for(let i=0;i<n;i++){
+    const t=i/n*2*Math.PI, s=Math.sin(t);
+    raw.push([16*s*s*s,
+              -(13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t))]);
+  }
+  let miX=1e9,maX=-1e9,miY=1e9,maY=-1e9;
+  for(const p of raw){ miX=Math.min(miX,p[0]);maX=Math.max(maX,p[0]);
+                       miY=Math.min(miY,p[1]);maY=Math.max(maY,p[1]); }
+  const k=size/Math.max(maX-miX, maY-miY);
+  const mx=(miX+maX)/2, my=(miY+maY)/2;
+  return raw.map(p=>[cx+(p[0]-mx)*k, cy+(p[1]-my)*k]);
+}
+// Ray-casting inside test (works for concave shapes: star, heart).
+function pointInPoly(x, y, pts){
+  let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const xi=pts[i][0], yi=pts[i][1], xj=pts[j][0], yj=pts[j][1];
+    if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
+}
+function polyBBox(pts){
+  let a=[1e9,-1e9,1e9,-1e9];
+  for(const p of pts){ a[0]=Math.min(a[0],p[0]);a[1]=Math.max(a[1],p[0]);
+                       a[2]=Math.min(a[2],p[1]);a[3]=Math.max(a[3],p[1]); }
+  return a;
+}
+// The parts of segment a-b that lie OUTSIDE the polygon.
+function segOutsidePoly(a, b, pts){
+  const ts=[0,1];
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const t=segIntersectT(a,b,pts[j],pts[i]);
+    if(t!==null) ts.push(t);
+  }
+  ts.sort((m,n)=>m-n);
+  const out=[];
+  for(let i=0;i+1<ts.length;i++){
+    const t0=ts[i], t1=ts[i+1];
+    if(t1-t0<1e-9) continue;
+    const mt=(t0+t1)/2;
+    const mx=a[0]+mt*(b[0]-a[0]), my=a[1]+mt*(b[1]-a[1]);
+    if(!pointInPoly(mx,my,pts))
+      out.push([[a[0]+t0*(b[0]-a[0]), a[1]+t0*(b[1]-a[1])],
+                [a[0]+t1*(b[0]-a[0]), a[1]+t1*(b[1]-a[1])]]);
+  }
+  return out;
+}
+// Parameter t along p1-p2 where it crosses q1-q2, or null.
+function segIntersectT(p1,p2,q1,q2){
+  const rx=p2[0]-p1[0], ry=p2[1]-p1[1], sx=q2[0]-q1[0], sy=q2[1]-q1[1];
+  const den=rx*sy-ry*sx;
+  if(Math.abs(den)<1e-12) return null;
+  const t=((q1[0]-p1[0])*sy-(q1[1]-p1[1])*sx)/den;
+  const u=((q1[0]-p1[0])*ry-(q1[1]-p1[1])*rx)/den;
+  return (t>0 && t<1 && u>=0 && u<=1) ? t : null;
+}
+function polyToPath(pts){
+  return "M" + pts.map(p=>p[0].toFixed(1)+","+p[1].toFixed(1)).join("L") + "Z";
+}
+// Scanline hatch fill: parallel horizontal lines inside the polygon so a
+// laser engraves the shape solid (LaserGRBL ignores SVG fills, traces lines).
+// `gaps` (optional): street segments to leave UNengraved, each {a,b,w}. The laser
+// cannot un-burn, so "white streets on a black heart" must be holes in the hatch —
+// the bare wood showing through is what reads as white.
+function hatchPath(pts, spacing, gaps, clearance=0){
+  let minY=1e9, maxY=-1e9;
+  for(const p of pts){ if(p[1]<minY)minY=p[1]; if(p[1]>maxY)maxY=p[1]; }
+  let d="";
+  for(let y=minY+spacing/2; y<maxY; y+=spacing){
+    const xs=[];
+    for(let i=0;i<pts.length;i++){
+      const a=pts[i], b=pts[(i+1)%pts.length];
+      if((a[1]<=y && b[1]>y) || (b[1]<=y && a[1]>y)){
+        xs.push(a[0] + (y-a[1])/(b[1]-a[1])*(b[0]-a[0]));
+      }
+    }
+    xs.sort((m,n)=>m-n);
+    // spans of this scanline that are inside the symbol
+    let spans=[];
+    for(let i=0;i+1<xs.length;i+=2) spans.push([xs[i],xs[i+1]]);
+    if(gaps && gaps.length){
+      // collect exclusion windows where a street crosses this scanline
+      const holes=[];
+      for(const g of gaps){
+        const h=capsuleSpanAtY(g.a, g.b, g.w/2+clearance, y);
+        if(h) holes.push(h);
+      }
+      if(holes.length) spans = subtractIntervals(spans, holes);
+    }
+    for(const [x0,x1] of spans){
+      if(x1-x0 < 0.15) continue;                 // skip slivers the laser can't do
+      d += `M${x0.toFixed(1)},${y.toFixed(1)}L${x1.toFixed(1)},${y.toFixed(1)}`;
+    }
+  }
+  return d;
+}
+// Where a horizontal line at `y` passes within `r` of segment a-b: [x0,x1] or null.
+// This is the segment's capsule (offset rectangle + round ends), so streets that
+// run PARALLEL to the hatch get a full-length gap instead of a dashed one.
+function capsuleSpanAtY(a, b, r, y){
+  let lo=Infinity, hi=-Infinity;
+  for(const p of [a,b]){                       // round ends
+    const dy=y-p[1];
+    if(Math.abs(dy)<=r){
+      const dx=Math.sqrt(r*r-dy*dy);
+      lo=Math.min(lo,p[0]-dx); hi=Math.max(hi,p[0]+dx);
+    }
+  }
+  const ex=b[0]-a[0], ey=b[1]-a[1], len=Math.hypot(ex,ey);
+  if(len>1e-9){                                // offset rectangle
+    const nx=-ey/len*r, ny=ex/len*r;
+    const quad=[[a[0]+nx,a[1]+ny],[b[0]+nx,b[1]+ny],[b[0]-nx,b[1]-ny],[a[0]-nx,a[1]-ny]];
+    const xs=[];
+    for(let i=0;i<4;i++){
+      const p=quad[i], q=quad[(i+1)%4];
+      if((p[1]<=y&&q[1]>y)||(q[1]<=y&&p[1]>y))
+        xs.push(p[0]+(y-p[1])/(q[1]-p[1])*(q[0]-p[0]));
+    }
+    if(xs.length>=2){ lo=Math.min(lo,...xs); hi=Math.max(hi,...xs); }
+  }
+  return lo<=hi ? [lo,hi] : null;
+}
+// Remove `holes` from `spans` (both arrays of [x0,x1]).
+function subtractIntervals(spans, holes){
+  holes.sort((m,n)=>m[0]-n[0]);
+  // merge overlapping holes first
+  const merged=[];
+  for(const h of holes){
+    const last=merged[merged.length-1];
+    if(last && h[0]<=last[1]) last[1]=Math.max(last[1],h[1]);
+    else merged.push([h[0],h[1]]);
+  }
+  let out=spans;
+  for(const h of merged){
+    const next=[];
+    for(const s of out){
+      if(h[1]<=s[0] || h[0]>=s[1]){ next.push(s); continue; }   // no overlap
+      if(h[0]>s[0]) next.push([s[0], h[0]]);
+      if(h[1]<s[1]) next.push([h[1], s[1]]);
+    }
+    out=next;
+  }
+  return out;
+}
+
+// ---- Clip a segment to a circle; returns the inside part or null ----
+function clipSegToCircle(a, b, cx, cy, r){
+  const dx=b[0]-a[0], dy=b[1]-a[1], fx=a[0]-cx, fy=a[1]-cy;
+  const A=dx*dx+dy*dy;
+  if(A===0) return (fx*fx+fy*fy<=r*r) ? [a,b] : null;
+  const B=2*(fx*dx+fy*dy), C=fx*fx+fy*fy-r*r;
+  let disc=B*B-4*A*C;
+  if(disc<0) return null;                      // segment misses the circle
+  disc=Math.sqrt(disc);
+  const t0=Math.max(0,(-B-disc)/(2*A)), t1=Math.min(1,(-B+disc)/(2*A));
+  if(t0>=t1) return null;
+  return [[a[0]+t0*dx, a[1]+t0*dy],[a[0]+t1*dx, a[1]+t1*dy]];
+}
+// ---- Clip a segment to the rectangle 0,0..w,h (Liang-Barsky) ----
+function clipSegToRect(a, b, w, h){
+  let t0=0, t1=1;
+  const dx=b[0]-a[0], dy=b[1]-a[1];
+  const p=[-dx,dx,-dy,dy], q=[a[0],w-a[0],a[1],h-a[1]];
+  for(let i=0;i<4;i++){
+    if(p[i]===0){ if(q[i]<0) return null; continue; }
+    const r=q[i]/p[i];
+    if(p[i]<0){ if(r>t1) return null; if(r>t0) t0=r; }
+    else      { if(r<t0) return null; if(r<t1) t1=r; }
+  }
+  if(t0>=t1) return null;
+  return [[a[0]+t0*dx,a[1]+t0*dy],[a[0]+t1*dx,a[1]+t1*dy]];
+}
+// Polyline -> path data. The geometry itself is always cut to the artwork
+// (circle or rectangle), so no path ever leaves the board and the exported SVG
+// needs no clipPath — laser software often ignores those.
+function lineToPolylines(pts, clip){
+  const out=[]; let run=null;
+  for(let i=0;i+1<pts.length;i++){
+    const seg = clip ? clipSegToCircle(pts[i],pts[i+1],VBW/2,VBH/2,clipR())
+                     : clipSegToRect(pts[i],pts[i+1],VBW,VBH);
+    if(!seg){ run=null; continue; }
+    if(run && Math.abs(run[run.length-1][0]-seg[0][0])<0.05
+           && Math.abs(run[run.length-1][1]-seg[0][1])<0.05){
+      run.push(seg[1]);
+    }else{
+      run=[seg[0],seg[1]]; out.push(run);
+    }
+  }
+  return out;
+}
+function polylinesToPath(list){
+  let d="";
+  for(const n of list){
+    d += "M" + n.map(p=>p[0].toFixed(1)+","+p[1].toFixed(1)).join("L");
+  }
+  return d;
+}
+// Reorder an existing "M..L.." path-data string (hatch, text) for less travel.
+function optimisePathData(d, start=[0,0]){
+  const list=[];
+  for(const raw of (d||"").split("M").filter(s=>s.trim())){
+    const n=raw.replace(/Z\s*$/i,"").split("L")
+               .map(s=>s.trim().split(",").map(Number))
+               .filter(p=>p.length===2 && isFinite(p[0]) && isFinite(p[1]));
+    if(n.length>1) list.push(n);
+  }
+  return list.length>1 ? polylinesToPath(orderPolylines(list, start)) : d;
+}
+// ---- Travel optimisation -------------------------------------------------
+// Overpass returns ways in arbitrary order, so consecutive pieces can sit at
+// opposite ends of the board. A laser follows document order, so that becomes
+// huge rapid moves. Greedy nearest-neighbour (a piece may also be run
+// backwards), accelerated with a uniform grid so big cities stay fast.
+function orderPolylines(list, start=[0,0]){
+  const n=list.length;
+  if(n<2) return list;
+  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+  for(const l of list) for(const p of [l[0], l[l.length-1]]){
+    minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);
+    minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]);
+  }
+  const cell=Math.max(Math.sqrt(((maxX-minX)*(maxY-minY))/Math.max(n,1)), 1e-6);
+  const cols=Math.max(1,Math.ceil((maxX-minX)/cell)+1);
+  const key=(cx,cy)=>cy*cols+cx;
+  const cx0=x=>Math.min(cols-1,Math.max(0,Math.floor((x-minX)/cell)));
+  const cy0=y=>Math.max(0,Math.floor((y-minY)/cell));
+  const grid=new Map();
+  const push=(x,y,rec)=>{ const k=key(cx0(x),cy0(y)); (grid.get(k)||grid.set(k,[]).get(k)).push(rec); };
+  for(let i=0;i<n;i++){
+    push(list[i][0][0], list[i][0][1], {i,rev:false});
+    const e=list[i][list[i].length-1];
+    push(e[0], e[1], {i,rev:true});
+  }
+  const used=new Array(n).fill(false), out=[];
+  let cur=start, left=n;
+  const rowsMax=Math.max(0,Math.ceil((maxY-minY)/cell));
+  while(left>0){
+    const ccx=cx0(cur[0]), ccy=cy0(cur[1]);
+    let best=-1, bestRev=false, bestD=Infinity;
+    for(let r=0; r<=Math.max(cols,rowsMax+1); r++){
+      if(best>=0 && (r-1)*cell > bestD) break;         // ring already farther than best
+      for(let dy=-r; dy<=r; dy++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;   // ring only
+          const gx=ccx+dx, gy=ccy+dy;
+          if(gx<0||gx>=cols||gy<0||gy>rowsMax) continue;
+          const bucket=grid.get(key(gx,gy)); if(!bucket) continue;
+          for(const rec of bucket){
+            if(used[rec.i]) continue;
+            const l=list[rec.i];
+            const p = rec.rev ? l[l.length-1] : l[0];
+            const dd=Math.hypot(p[0]-cur[0], p[1]-cur[1]);
+            if(dd<bestD){ bestD=dd; best=rec.i; bestRev=rec.rev; }
+          }
+        }
+      }
+    }
+    if(best<0) break;                                   // safety
+    used[best]=true; left--;
+    const seg = bestRev ? [...list[best]].reverse() : list[best];
+    out.push(seg); cur=seg[seg.length-1];
+  }
+  for(let i=0;i<n;i++) if(!used[i]) out.push(list[i]);   // safety net
+  return out;
+}
+
+// ---- Single-line vector "stick" font (grid x:0..4/6, y:0..6 top-down) ----
+// Engraves reliably because every glyph is just polylines, like the streets.
+const GL = {
+ ' ':{w:3,s:[]},
+ 'A':{w:5,s:[[[0,6],[2,0],[4,6]],[[0.8,4],[3.2,4]]]},
+ 'B':{w:5,s:[[[0,0],[0,6]],[[0,0],[3,0],[4,1],[3,3],[0,3]],[[0,3],[3,3],[4,4.5],[3,6],[0,6]]]},
+ 'C':{w:5,s:[[[4,1],[3,0],[1,0],[0,1],[0,5],[1,6],[3,6],[4,5]]]},
+ 'D':{w:5,s:[[[0,0],[0,6]],[[0,0],[2,0],[4,2],[4,4],[2,6],[0,6]]]},
+ 'E':{w:5,s:[[[4,0],[0,0],[0,6],[4,6]],[[0,3],[3,3]]]},
+ 'F':{w:5,s:[[[4,0],[0,0],[0,6]],[[0,3],[3,3]]]},
+ 'G':{w:5,s:[[[4,1],[3,0],[1,0],[0,1],[0,5],[1,6],[3,6],[4,5],[4,3.2],[2.5,3.2]]]},
+ 'H':{w:5,s:[[[0,0],[0,6]],[[4,0],[4,6]],[[0,3],[4,3]]]},
+ 'I':{w:3,s:[[[0.5,0],[2.5,0]],[[1.5,0],[1.5,6]],[[0.5,6],[2.5,6]]]},
+ 'J':{w:5,s:[[[4,0],[4,5],[3,6],[1,6],[0,5]]]},
+ 'K':{w:5,s:[[[0,0],[0,6]],[[4,0],[0,3.2]],[[1.2,3.2],[4,6]]]},
+ 'L':{w:5,s:[[[0,0],[0,6],[4,6]]]},
+ 'M':{w:7,s:[[[0,6],[0,0],[3,4],[6,0],[6,6]]]},
+ 'N':{w:5,s:[[[0,6],[0,0],[4,6],[4,0]]]},
+ 'O':{w:5,s:[[[1,0],[3,0],[4,1],[4,5],[3,6],[1,6],[0,5],[0,1],[1,0]]]},
+ 'P':{w:5,s:[[[0,6],[0,0],[3,0],[4,1],[4,2],[3,3],[0,3]]]},
+ 'Q':{w:5,s:[[[1,0],[3,0],[4,1],[4,5],[3,6],[1,6],[0,5],[0,1],[1,0]],[[2.5,4.5],[4,6]]]},
+ 'R':{w:5,s:[[[0,6],[0,0],[3,0],[4,1],[4,2],[3,3],[0,3]],[[2,3],[4,6]]]},
+ 'S':{w:5,s:[[[4,1],[3,0],[1,0],[0,1],[0,2],[1,3],[3,3],[4,4],[4,5],[3,6],[1,6],[0,5]]]},
+ 'T':{w:5,s:[[[0,0],[4,0]],[[2,0],[2,6]]]},
+ 'U':{w:5,s:[[[0,0],[0,5],[1,6],[3,6],[4,5],[4,0]]]},
+ 'V':{w:5,s:[[[0,0],[2,6],[4,0]]]},
+ 'W':{w:7,s:[[[0,0],[1.2,6],[3,2],[4.8,6],[6,0]]]},
+ 'X':{w:5,s:[[[0,0],[4,6]],[[4,0],[0,6]]]},
+ 'Y':{w:5,s:[[[0,0],[2,3],[4,0]],[[2,3],[2,6]]]},
+ 'Z':{w:5,s:[[[0,0],[4,0],[0,6],[4,6]]]},
+ '0':{w:5,s:[[[1,0],[3,0],[4,1],[4,5],[3,6],[1,6],[0,5],[0,1],[1,0]],[[0,5],[4,1]]]},
+ '1':{w:5,s:[[[1,1],[2,0],[2,6]],[[1,6],[3,6]]]},
+ '2':{w:5,s:[[[0,1],[1,0],[3,0],[4,1],[4,2],[0,6],[4,6]]]},
+ '3':{w:5,s:[[[0,0],[3,0],[4,1],[3,3],[1,3]],[[3,3],[4,4],[4,5],[3,6],[1,6],[0,5]]]},
+ '4':{w:5,s:[[[3,6],[3,0],[0,4],[4,4]]]},
+ '5':{w:5,s:[[[4,0],[0,0],[0,3],[3,3],[4,4],[4,5],[3,6],[1,6],[0,5]]]},
+ '6':{w:5,s:[[[4,1],[3,0],[1,0],[0,1],[0,5],[1,6],[3,6],[4,5],[4,4],[3,3],[0,3]]]},
+ '7':{w:5,s:[[[0,0],[4,0],[1,6]]]},
+ '8':{w:5,s:[[[1,3],[0,2],[0,1],[1,0],[3,0],[4,1],[4,2],[3,3],[1,3],[0,4],[0,5],[1,6],[3,6],[4,5],[4,4],[3,3]]]},
+ '9':{w:5,s:[[[4,3],[1,3],[0,2],[0,1],[1,0],[3,0],[4,1],[4,5],[3,6],[1,6],[0,5]]]},
+ '.':{w:2,s:[[[0.8,6],[0.8,5.4]]]},
+ ',':{w:2,s:[[[1,5.3],[1,6],[0.3,6.8]]]},
+ '-':{w:5,s:[[[1,3],[3,3]]]},
+ ':':{w:2,s:[[[1,2],[1,2.6]],[[1,4.2],[1,4.8]]]},
+ '°':{w:3,s:[[[0.5,1],[1.2,0.3],[1.9,1],[1.2,1.7],[0.5,1]]]},
+ '/':{w:4,s:[[[0,6],[4,0]]]},
+ "'":{w:2,s:[[[1,0],[1,1.8]]]},
+ '!':{w:2,s:[[[1,0],[1,4]],[[1,5.4],[1,6]]]},
+ '?':{w:5,s:[[[0,1],[1,0],[3,0],[4,1],[4,2],[2,3.5],[2,4.2]],[[2,5.4],[2,6]]]},
+ '&':{w:6,s:[[[5,6],[1.5,2.6],[1.5,1],[2.5,0],[3.5,1],[3.5,2],[0,4.2],[0,5],[1,6],[2.5,6],[4,4.6]]]},
+ '+':{w:5,s:[[[2,1.5],[2,4.5]],[[0.5,3],[3.5,3]]]},
+ '(':{w:3,s:[[[2,0],[0.8,2],[0.8,4],[2,6]]]},
+ ')':{w:3,s:[[[0.5,0],[1.7,2],[1.7,4],[0.5,6]]]},
+ '"':{w:4,s:[[[1,0],[1,1.8]],[[2.5,0],[2.5,1.8]]]},
+ '_':{w:5,s:[[[0,6],[4,6]]]}
+};
+// Strip accents (é→E) so free text doesn't silently lose characters in the stick font.
+function normText(s){
+  return s.normalize("NFD").replace(/[̀-ͯ]/g,"")
+          .replace(/[’‘]/g,"'").replace(/[“”]/g,'"').replace(/[–—]/g,"-");
+}
+// Build path data for a text string; returns {d, width}. Origin (x,y)=top-left, cap height = size.
+function textPath(str, x, y, size){
+  const sc=size/6, spc=0.7*sc; let cx=x, d="";
+  for(const raw of normText(str).toUpperCase()){
+    const g = GL[raw] || GL[' '];
+    for(const stroke of g.s){
+      d += "M" + stroke.map(p=>(cx+p[0]*sc).toFixed(1)+","+(y+p[1]*sc).toFixed(1)).join("L");
+    }
+    cx += g.w*sc + spc;
+  }
+  return {d, width: cx-x-spc};
+}
+// Same layout as textPath, but as raw segments so streets can be masked around them.
+function textSegments(str, x, y, size){
+  const sc=size/6, spc=0.7*sc; let cx=x; const segs=[];
+  for(const raw of normText(str).toUpperCase()){
+    const g = GL[raw] || GL[' '];
+    for(const stroke of g.s){
+      for(let i=0;i+1<stroke.length;i++){
+        segs.push([[cx+stroke[i][0]*sc,   y+stroke[i][1]*sc],
+                   [cx+stroke[i+1][0]*sc, y+stroke[i+1][1]*sc]]);
+      }
+    }
+    cx += g.w*sc + spc;
+  }
+  return segs;
+}
+// t-interval of segment a-b lying within `r` of segment c-d (its capsule), or null.
+// A capsule is convex, so the intersection with a line is a single interval.
+function segInCapsuleT(a, b, c, d, r){
+  const dx=b[0]-a[0], dy=b[1]-a[1];
+  let lo=Infinity, hi=-Infinity;
+  const add=(t0,t1)=>{ if(t0<lo)lo=t0; if(t1>hi)hi=t1; };
+  const A=dx*dx+dy*dy;
+  for(const p of [c,d]){                                   // round ends
+    const fx=a[0]-p[0], fy=a[1]-p[1];
+    if(A<1e-12){ if(fx*fx+fy*fy<=r*r) add(0,1); continue; }
+    const B=2*(fx*dx+fy*dy), C=fx*fx+fy*fy-r*r;
+    let disc=B*B-4*A*C;
+    if(disc<0) continue;
+    disc=Math.sqrt(disc);
+    add((-B-disc)/(2*A), (-B+disc)/(2*A));
+  }
+  const ex=d[0]-c[0], ey=d[1]-c[1], L=Math.hypot(ex,ey);
+  if(L>1e-9 && A>=1e-12){                                  // offset rectangle
+    const ux=ex/L, uy=ey/L, nx=-uy, ny=ux;
+    let t0=-Infinity, t1=Infinity, dead=false;
+    const clip=(p0,dd,lo2,hi2)=>{
+      if(Math.abs(dd)<1e-12){ if(p0<lo2||p0>hi2) dead=true; return; }
+      let ta=(lo2-p0)/dd, tb=(hi2-p0)/dd;
+      if(ta>tb){ const s=ta; ta=tb; tb=s; }
+      t0=Math.max(t0,ta); t1=Math.min(t1,tb);
+    };
+    clip((a[0]-c[0])*nx+(a[1]-c[1])*ny, dx*nx+dy*ny, -r, r);
+    clip((a[0]-c[0])*ux+(a[1]-c[1])*uy, dx*ux+dy*uy, 0, L);
+    if(!dead && t0<=t1) add(t0,t1);
+  }
+  if(lo===Infinity) return null;
+  lo=Math.max(0,lo); hi=Math.min(1,hi);
+  return lo<hi ? [lo,hi] : null;
+}
+// Parts of segment a-b left after removing everything within `r` of any of `segs`.
+function segMinusCapsules(a, b, segs, r){
+  const holes=[];
+  for(const t of segs){
+    const iv=segInCapsuleT(a,b,t[0],t[1],r);
+    if(iv) holes.push(iv);
+  }
+  if(!holes.length) return [[a,b]];
+  const kept=subtractIntervals([[0,1]], holes);
+  const out=[];
+  for(const [t0,t1] of kept){
+    if(t1-t0<1e-6) continue;
+    out.push([[a[0]+t0*(b[0]-a[0]), a[1]+t0*(b[1]-a[1])],
+              [a[0]+t1*(b[0]-a[0]), a[1]+t1*(b[1]-a[1])]]);
+  }
+  return out;
+}
+
+// Work out the caption text, size and position. Returned up front so the street
+// layer can mask around the letters before they are drawn.
+function layoutCaption(fmt, circle){
+  if(!lastData) return null;
+  const lines = [];
+  if($("showname").checked){
+    const custom = $("customtext").value.trim();        // own text overrides the place name
+    const label = custom || (lastData.query||"").split(",")[0].trim();
+    if(label) lines.push(label);
+  }
+  if($("showcoords").checked){
+    const la=lastData.center.lat, lo=lastData.center.lon;
+    lines.push(`${Math.abs(la).toFixed(4)}°${la>=0?"N":"S"}  ${Math.abs(lo).toFixed(4)}°${lo>=0?"E":"W"}`);
+  }
+  if(!lines.length) return null;
+
+  let cap = Math.max((+$("capmm").value)*fmt.unitsPerMm, 6);   // cap height in viewBox units
+  const pad = Math.max(4*fmt.unitsPerMm, 6);                   // ~4 mm margin
+  let x0, xMax, yBottom;
+  if(circle){
+    const r=clipR(), cx=VBW/2, cy=VBH/2;
+    yBottom = cy + r*0.88;                                     // stay inside the disc
+    const hw = Math.sqrt(Math.max(r*r - (yBottom-cy)**2, 0));   // chord half-width there
+    x0 = cx - hw + pad*0.6; xMax = cx + hw - pad*0.6;
+  }else{
+    x0 = pad; xMax = VBW - pad; yBottom = VBH - pad;
+  }
+  const widest = Math.max(...lines.map(ln => textPath(ln,0,0,cap).width));
+  if(widest > xMax - x0) cap *= (xMax - x0)/widest;             // shrink to fit
+  const lh = cap*1.55;
+  const blockH = lines.length*cap + (lines.length-1)*(lh-cap);
+  const yTop = yBottom - blockH;
+  const centred = $("align").value==="center";
+  const placed = lines.map((ln,i)=>{
+    const w = textPath(ln,0,0,cap).width;
+    return { text: ln, x: centred ? x0 + (xMax-x0-w)/2 : x0, y: yTop + i*lh };
+  });
+  const segs = placed.flatMap(pl => textSegments(pl.text, pl.x, pl.y, cap));
+  return { placed, cap, segs };
+}
+
+// ---- Render SVG ----
+function render(){
+  if(!lastData) return;
+  const {ways, center, radiusM} = lastData;
+  const invert = $("invert").checked;
+  const circle = $("circle").checked;
+  const weighted = $("weighted").checked;
+  const base = +$("thick").value;
+  const bg = invert ? "#000" : "#fff";
+  const fg = invert ? "#fff" : "#000";
+
+  const fmt = readFormat();                 // sets VBW/VBH from the mm inputs
+  const project = makeProjector(center.lat, center.lon, radiusM);
+
+  // group paths by weight so we can vary stroke-width
+  const buckets = {};
+  for(const w of ways){
+    const key = weighted ? w.cls : "one";
+    (buckets[key] ||= []).push(w.pts.map(p=>project(p[0],p[1])));
+  }
+
+  const svg = document.createElementNS(SVGNS,"svg");
+  svg.setAttribute("xmlns", SVGNS);
+  svg.setAttribute("viewBox", `0 0 ${VBW.toFixed(2)} ${VBH.toFixed(2)}`);
+  svg.setAttribute("width", fmt.w+"mm");
+  svg.setAttribute("height", fmt.h+"mm");
+
+  // Background: preview only. It is stripped from the downloaded SVG, because a
+  // fill-only shape still gets traced as a frame by laser software.
+  const rect = document.createElementNS(SVGNS, circle?"circle":"rect");
+  if(circle){ rect.setAttribute("cx",VBW/2);rect.setAttribute("cy",VBH/2);rect.setAttribute("r",clipR()); }
+  else { rect.setAttribute("width",VBW);rect.setAttribute("height",VBH); }
+  rect.setAttribute("fill", bg);
+  rect.setAttribute("data-preview","1");
+  svg.appendChild(rect);
+
+  const g = document.createElementNS(SVGNS,"g");
+  g.setAttribute("fill","none");
+  g.setAttribute("stroke",fg);
+  g.setAttribute("stroke-linecap","round");
+  g.setAttribute("stroke-linejoin","round");
+  svg.appendChild(g);
+
+  // ---- Symbol geometry first: the streets need to know where it sits ----
+  const showSym = $("house").checked;
+  const invSym  = showSym && $("invsym").checked;
+  let symPts=null, symBox=null;
+  if(showSym){
+    const [mx,my] = project(center.lat, center.lon);
+    const s = +$("housesize").value, kind = $("symbol").value;
+    symPts = kind==="star"  ? starPoints(mx,my,s)
+           : kind==="heart" ? heartPoints(mx,my,s)
+           :                  housePoints(mx,my,s);
+    symBox = polyBBox(symPts);
+  }
+  const inSymBox = (a,b) => symBox &&
+    Math.max(a[0],b[0])>=symBox[0] && Math.min(a[0],b[0])<=symBox[1] &&
+    Math.max(a[1],b[1])>=symBox[2] && Math.min(a[1],b[1])<=symBox[3];
+
+  // ---- Caption layout, also computed up front: the streets need to know where
+  // the letters are so they can be masked around them ----
+  const capLayout = layoutCaption(fmt, circle);
+  const maskText  = capLayout && $("masktext").checked;
+  const txtSegs   = maskText ? capLayout.segs : null;
+  const txtR      = maskText ? Math.max(capLayout.cap*0.16, base*0.9) : 0;  // halo radius
+  let txtBox = null;
+  if(maskText){
+    txtBox = [1e9,-1e9,1e9,-1e9];
+    for(const s of txtSegs) for(const p of s){
+      txtBox[0]=Math.min(txtBox[0],p[0]); txtBox[1]=Math.max(txtBox[1],p[0]);
+      txtBox[2]=Math.min(txtBox[2],p[1]); txtBox[3]=Math.max(txtBox[3],p[1]);
+    }
+    txtBox=[txtBox[0]-txtR,txtBox[1]+txtR,txtBox[2]-txtR,txtBox[3]+txtR];
+  }
+  const inTxtBox = (a,b) => txtBox &&
+    Math.max(a[0],b[0])>=txtBox[0] && Math.min(a[0],b[0])<=txtBox[1] &&
+    Math.max(a[1],b[1])>=txtBox[2] && Math.min(a[1],b[1])<=txtBox[3];
+
+  const order = ["water","rail","minor","street","primary","major","one"];
+  const gapSegs = [];                 // street pieces inside the symbol → hatch holes
+  const optimise = $("optimise").checked;
+  let lastPen = [0,0];                // where the head ends up, to chain groups
+  for(const key of order){
+    if(!buckets[key]) continue;
+    const w = base * (weighted ? (WEIGHT[key]||1) : 1);
+    const sub = document.createElementNS(SVGNS,"g");
+    sub.setAttribute("stroke-width", w.toFixed(2));
+    if(key==="water"){ sub.setAttribute("stroke", invert?"#888":"#888"); }
+    let polys = [];
+    for(const line of buckets[key]){
+      if(!invSym && !maskText){ polys.push(...lineToPolylines(line, circle)); continue; }
+      let kept=[];
+      for(let i=0;i+1<line.length;i++){
+        const a=line[i], b=line[i+1];
+        // Inverted symbol: keep only the parts OUTSIDE it, and remember the parts
+        // inside so the hatch can leave them blank.
+        if(invSym && inSymBox(a,b)){
+          for(const piece of segOutsidePoly(a,b,symPts)) kept.push(piece);
+          gapSegs.push({a,b,w});
+        }else{
+          kept.push([a,b]);
+        }
+      }
+      // Text mask: drop anything running through the halo around the letters.
+      if(maskText){
+        const cleared=[];
+        for(const seg of kept){
+          if(!inTxtBox(seg[0],seg[1])){ cleared.push(seg); continue; }   // cheap reject
+          for(const piece of segMinusCapsules(seg[0],seg[1],txtSegs,txtR)) cleared.push(piece);
+        }
+        kept=cleared;
+      }
+      for(const seg of kept) polys.push(...lineToPolylines(seg, circle));
+    }
+    if(optimise) polys = orderPolylines(polys, lastPen);
+    if(polys.length) lastPen = polys[polys.length-1][polys[polys.length-1].length-1];
+    const path = document.createElementNS(SVGNS,"path");
+    path.setAttribute("d", polylinesToPath(polys));
+    sub.appendChild(path); g.appendChild(sub);
+  }
+
+  // symbol marker on the geocoded address (drawn on top, not clipped).
+  // Outline + scanline hatch so it engraves SOLID (LaserGRBL traces lines, ignores fills).
+  if(showSym){
+    const pts = symPts;
+    const lw = Math.max(base*0.8, 1.2);              // outline line weight
+    // hatch spacing: user sets it in mm, convert to viewBox units
+    const gap = Math.max((+$("hatchmm").value) * fmt.unitsPerMm, 0.3);
+    const grp = document.createElementNS(SVGNS,"g");
+    grp.setAttribute("fill","none"); grp.setAttribute("stroke",fg);
+    grp.setAttribute("stroke-linejoin","round"); grp.setAttribute("stroke-linecap","round");
+    // hatch fill: lines slightly wider than the gap so they overlap → solid.
+    // With inversion on, street corridors are cut out so bare wood shows through.
+    const fill = document.createElementNS(SVGNS,"path");
+    let hatchD = hatchPath(pts, gap, invSym?gapSegs:null, gap*0.9);
+    if(optimise) hatchD = optimisePathData(hatchD, lastPen);   // serpentine instead of always L→R
+    fill.setAttribute("d", hatchD);
+    fill.setAttribute("stroke-width",(gap*1.25).toFixed(2));
+    // Butt caps, not round: round caps overhang by half the stroke width and
+    // would close the street gaps back up.
+    fill.setAttribute("stroke-linecap","butt");
+    grp.appendChild(fill);
+    // crisp outline on top
+    const outline = document.createElementNS(SVGNS,"path");
+    outline.setAttribute("d", polyToPath(pts));
+    outline.setAttribute("stroke-width",lw.toFixed(2));
+    grp.appendChild(outline);
+    svg.appendChild(grp);
+  }
+
+  if(capLayout){
+    const cap_g = document.createElementNS(SVGNS,"g");
+    cap_g.setAttribute("fill","none"); cap_g.setAttribute("stroke",fg);
+    cap_g.setAttribute("stroke-width",Math.max(base,1.4).toFixed(2));
+    cap_g.setAttribute("stroke-linejoin","round"); cap_g.setAttribute("stroke-linecap","round");
+    let d="";
+    for(const pl of capLayout.placed) d += textPath(pl.text, pl.x, pl.y, capLayout.cap).d;
+    const p = document.createElementNS(SVGNS,"path");
+    p.setAttribute("d", optimise ? optimisePathData(d, lastPen) : d);
+    cap_g.appendChild(p);
+    svg.appendChild(cap_g);
+  }
+
+  // optional cut line around the artwork (off by default — most people don't want it engraved)
+  if($("frame").checked){
+    const fr = document.createElementNS(SVGNS, circle?"circle":"rect");
+    if(circle){ fr.setAttribute("cx",VBW/2);fr.setAttribute("cy",VBH/2);fr.setAttribute("r",clipR()-1); }
+    else { fr.setAttribute("x",1);fr.setAttribute("y",1);
+           fr.setAttribute("width",VBW-2);fr.setAttribute("height",VBH-2); }
+    fr.setAttribute("fill","none"); fr.setAttribute("stroke",fg);
+    fr.setAttribute("stroke-width",Math.max(base,1).toFixed(2));
+    svg.appendChild(fr);
+  }
+
+  const stage = $("stage");
+  stage.innerHTML = "";
+  stage.appendChild(svg);
+  $("dl").disabled = false;
+}
+
+// ---- Main action ----
+$("go").onclick = async () => {
+  const q = $("place").value.trim();
+  if(!q){ setStatus("Vul een plaats in","err"); return; }
+  $("hint").style.display="none";
+  $("go").disabled = true; $("dl").disabled = true;
+  try{
+    spin(true,"Plaats zoeken…"); setStatus("");
+    const center = await geocode(q);
+    const radiusM = Math.round((+$("radius").value)*1000);
+    spin(true,"Wegen ophalen (kan even duren)…");
+    const opts = { minor:$("minor").checked, rail:$("rail").checked, water:$("water").checked };
+    // Overpass fetches a CIRCLE, so ask for the rectangle's half-diagonal —
+    // otherwise the corners of the board come out empty.
+    readFormat();
+    const {halfW, halfH} = halfExtents(radiusM);
+    const fetchR = Math.round(Math.hypot(halfW, halfH));
+    const ways = await fetchRoads(center.lat, center.lon, fetchR, opts);
+    if(!ways.length) throw new Error("Geen wegen gevonden — grotere straal?");
+    lastData = { ways, center, radiusM, query:q };
+    render();
+    // Show enough of the matched name that a wrong hit is obvious
+    // ("Leek" alone matches Leek in England before Leek in Groningen).
+    const parts = center.name.split(",").map(s=>s.trim());
+    const shown = [parts[0], parts[parts.length-1]].filter(Boolean).join(", ");
+    setStatus(`${shown} — ${ways.length} lijnen`, "ok");
+  }catch(err){
+    setStatus(err.message, "err");
+    $("hint").style.display = lastData ? "none":"block";
+  }finally{
+    spin(false); $("go").disabled=false;
+  }
+};
+
+// ---- Download ----
+$("dl").onclick = () => {
+  const live = $("stage").querySelector("svg");
+  if(!live) return;
+  // Export a copy without the preview-only background, so the laser only sees
+  // the actual lines (a fill-only shape would still be traced as a frame).
+  const svg = live.cloneNode(true);
+  svg.querySelectorAll("[data-preview]").forEach(el => el.remove());
+  const src = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([src], {type:"image/svg+xml"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const name = ($("place").value.trim().split(",")[0] || "kaart").replace(/[^\w\- ]/g,"").replace(/\s+/g,"_");
+  a.download = name + "_map.svg";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+</script>
