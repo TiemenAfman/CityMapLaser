@@ -48,6 +48,11 @@ als verhoogd reliëf. Straten zijn doorlopende linten met verstekhoeken en ronde
 uiteinden; wegen die op de plaatrand worden afgekapt houden een recht einde. Instelbaar: dikte grondplaat, hoogte van het reliëf en de
 breedte van de dunste straat (houd die minstens ~2× je nozzle, anders print hij niet).
 
+Met **Rand voor lijst** krijg je een opstaande rand rondom, op dezelfde hoogte als
+de straten en met instelbare breedte (standaard 3 mm), zodat het model in een lijst
+gemonteerd kan worden. Het onderschrift schuift automatisch mee zodat het vrij van
+de rand blijft.
+
 ### Twee kleuren (AMS)
 
 Zet **2 kleuren** aan en gebruik **3MF downloaden**. Een STL bevat geen positie:

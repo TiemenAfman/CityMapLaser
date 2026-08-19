@@ -195,6 +195,11 @@
       <input id="smoothIter" type="range" min="0" max="3" step="1" value="2">
       <output id="smoothOut">2</output>
     </div>
+    <label class="check" style="margin-top:10px"><input type="checkbox" id="rimOn"> Rand voor lijst</label>
+    <div class="range">
+      <input id="rimMm" type="range" min="1" max="10" step="0.5" value="3">
+      <output id="rimOut">3.0 mm</output>
+    </div>
     <label class="check" style="margin-top:10px"><input type="checkbox" id="twocolor"> 2 kleuren (AMS): plaat en straten apart</label>
     <button id="dlstl" class="ghost" style="margin-top:4px" disabled>STL downloaden</button>
     <button id="dl3mf" style="margin-top:4px; display:none" disabled>3MF downloaden</button>
@@ -247,6 +252,7 @@ $("capmm").oninput = e => { $("capOut").textContent = (+e.target.value).toFixed(
 $("customtext").oninput = () => { if(lastData) render(); };
 ["circle","invert","weighted","house","symbol","showname","showcoords","frame","align","invsym","masktext","optimise"].forEach(id => $(id).onchange = () => { if(lastData) render(); });
 ["wmm","hmm"].forEach(id => $(id).oninput = () => { updateRadiusOut(); if(lastData) render(); });
+$("rimMm").oninput = e => { $("rimOut").textContent = (+e.target.value).toFixed(1)+" mm"; };
 $("minlen").oninput = e => {
   $("minlenOut").textContent = (+e.target.value).toFixed(1)+" mm";
   if(lastData && $("minlenOn").checked) render();
@@ -826,7 +832,10 @@ function layoutCaption(fmt, circle){
   if(!lines.length) return null;
 
   let cap = Math.max((+$("capmm").value)*fmt.unitsPerMm, 6);   // cap height in viewBox units
-  const pad = Math.max(4*fmt.unitsPerMm, 6);                   // ~4 mm margin
+  // ~4 mm margin, but stay clear of the raised border if there is one, or the
+  // caption would run into it on the printed model.
+  const rimU = $("rimOn").checked ? (+$("rimMm").value + 1.5) * fmt.unitsPerMm : 0;
+  const pad = Math.max(4*fmt.unitsPerMm, rimU, 6);
   let x0, xMax, yBottom;
   if(circle){
     const r=clipR(), cx=VBW/2, cy=VBH/2;
@@ -1153,14 +1162,33 @@ function addRibbon(tris, pts, w, z0, z1, clamp){
   triAddQuad(tris, lo(L[0]), lo(R[0]), hi(R[0]), hi(L[0]));         // start cap
   triAddQuad(tris, lo(R[e]), lo(L[e]), hi(L[e]), hi(R[e]));         // end cap
 }
+// Ring wall between two radii — the border for a round plate.
+function addAnnulus(tris, cx, cy, rOut, rIn, z0, z1, n){
+  n = n || 180;
+  const O=[], I=[];
+  for(let i=0;i<n;i++){
+    const a = i/n*2*Math.PI, c=Math.cos(a), s2=Math.sin(a);
+    O.push([cx+rOut*c, cy+rOut*s2]);
+    I.push([cx+rIn*c,  cy+rIn*s2]);
+  }
+  for(let i=0;i<n;i++){
+    const j=(i+1)%n;
+    triAddQuad(tris, [O[i][0],O[i][1],z1],[O[j][0],O[j][1],z1],[I[j][0],I[j][1],z1],[I[i][0],I[i][1],z1]);
+    triAddQuad(tris, [I[i][0],I[i][1],z0],[I[j][0],I[j][1],z0],[O[j][0],O[j][1],z0],[O[i][0],O[i][1],z0]);
+    triAddQuad(tris, [O[j][0],O[j][1],z0],[O[j][0],O[j][1],z1],[O[i][0],O[i][1],z1],[O[i][0],O[i][1],z0]);
+    triAddQuad(tris, [I[i][0],I[i][1],z0],[I[i][0],I[i][1],z1],[I[j][0],I[j][1],z1],[I[j][0],I[j][1],z0]);
+  }
+}
 // Vertical cylinder, used as a round cap so a street never ends in a square
 // nub — and so an end-to-end change of road class steps over less harshly.
-function addDisc(tris, c, r, z0, z1){
+function addDisc(tris, c, r, z0, z1, clamp){
   const n = Math.max(10, Math.min(20, Math.round(r*12)));
   const ring = [];
   for(let i=0;i<n;i++){
     const a = i/n*2*Math.PI;
-    ring.push([c[0]+r*Math.cos(a), c[1]+r*Math.sin(a)]);
+    let p = [c[0]+r*Math.cos(a), c[1]+r*Math.sin(a)];
+    if(clamp) p = clamp(p);            // a cap near the border must not hang off the plate
+    ring.push(p);
   }
   for(let i=0;i<n;i++){
     const p=ring[i], q=ring[(i+1)%n];
@@ -1308,7 +1336,23 @@ function buildTris(part){         // "all" | "plate" | "relief"
       if(smooth > 0 && pts.length > 2) pts = chaikin(pts, smooth);
       addRibbon(tris, pts, w, baseT-sink, zTop, clamp);
       for(const end of [pts[0], pts[pts.length-1]])
-        if(!onEdge(end)) addDisc(tris, end, w/2, baseT-sink, zTop);
+        if(!onEdge(end)) addDisc(tris, end, w/2, baseT-sink, zTop, clamp);
+    }
+  }
+  // Raised border, level with the streets, so the model has a solid edge to sit
+  // in a picture frame. It belongs to the relief part: keeping it out of the
+  // plate means no extra filament changes above the plate top.
+  if($("rimOn").checked){
+    const rim = Math.max(0.4, +$("rimMm").value);
+    if(circle){
+      const r = clipR()*k;
+      addAnnulus(tris, cCx, cCy, r, Math.max(r-rim, 0.2), baseT-sink, zTop);
+    }else{
+      const W=fmt.w, H=fmt.h, t=Math.min(rim, Math.min(W,H)/2 - 0.2);
+      addExtrusion(tris, [[0,0],[t,0],[t,H],[0,H]],           baseT-sink, zTop);   // left
+      addExtrusion(tris, [[W-t,0],[W,0],[W,H],[W-t,H]],       baseT-sink, zTop);   // right
+      addExtrusion(tris, [[t,0],[W-t,0],[W-t,t],[t,t]],       baseT-sink, zTop);   // bottom
+      addExtrusion(tris, [[t,H-t],[W-t,H-t],[W-t,H],[t,H]],   baseT-sink, zTop);   // top
     }
   }
   // symbol as a solid block
