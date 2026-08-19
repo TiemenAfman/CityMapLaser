@@ -24,6 +24,10 @@ Vereist [Node.js](https://nodejs.org) (alleen voor het lokale servertje).
 - Straten omkeren onder het symbool (symbool zwart, straten blijven wit zichtbaar)
 - Onderschrift met plaatsnaam/eigen tekst en coördinaten, met vrijgemaakte tekst
 
+Met **Korte stukjes weglaten** filter je stompjes en losse fragmenten onder een
+instelbare lengte weg — die lezen op deze schaal als artefact in plaats van als straat.
+Dat geldt voor zowel de SVG als de STL.
+
 ## Laser-specifieke keuzes
 
 Een laser volgt lijnen en negeert SVG-`fill`. Daar is de uitvoer op afgestemd:
@@ -40,7 +44,8 @@ Een laser volgt lijnen en negeert SVG-`fill`. Daar is de uitvoer op afgestemd:
 ## 3D printen
 
 De STL-export maakt een grondplaat met de straten, het symbool en het onderschrift
-als verhoogd reliëf. Instelbaar: dikte grondplaat, hoogte van het reliëf en de
+als verhoogd reliëf. Straten zijn doorlopende linten met verstekhoeken en ronde
+uiteinden; wegen die op de plaatrand worden afgekapt houden een recht einde. Instelbaar: dikte grondplaat, hoogte van het reliëf en de
 breedte van de dunste straat (houd die minstens ~2× je nozzle, anders print hij niet).
 
 ### Twee kleuren (AMS)

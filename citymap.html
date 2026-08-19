@@ -97,6 +97,11 @@
     <label class="check"><input type="checkbox" id="minor" checked> Kleine straten &amp; paden</label>
     <label class="check"><input type="checkbox" id="rail"> Spoorlijnen</label>
     <label class="check"><input type="checkbox" id="water"> Water (rivieren/kanalen)</label>
+    <label class="check" style="margin-top:8px"><input type="checkbox" id="minlenOn"> Korte stukjes weglaten</label>
+    <div class="range">
+      <input id="minlen" type="range" min="0.5" max="8" step="0.5" value="2">
+      <output id="minlenOut">2.0 mm</output>
+    </div>
   </fieldset>
 
   <fieldset>
@@ -242,6 +247,11 @@ $("capmm").oninput = e => { $("capOut").textContent = (+e.target.value).toFixed(
 $("customtext").oninput = () => { if(lastData) render(); };
 ["circle","invert","weighted","house","symbol","showname","showcoords","frame","align","invsym","masktext","optimise"].forEach(id => $(id).onchange = () => { if(lastData) render(); });
 ["wmm","hmm"].forEach(id => $(id).oninput = () => { updateRadiusOut(); if(lastData) render(); });
+$("minlen").oninput = e => {
+  $("minlenOut").textContent = (+e.target.value).toFixed(1)+" mm";
+  if(lastData && $("minlenOn").checked) render();
+};
+$("minlenOn").onchange = () => { if(lastData) render(); };
 $("timeout").oninput = e => $("timeoutOut").textContent = e.target.value+" s";
 $("place").addEventListener("keydown", e => { if(e.key==="Enter") $("go").click(); });
 updateRadiusOut();   // show the real km span for the default board size
@@ -577,6 +587,11 @@ function lineToPolylines(pts, clip){
     }
   }
   return out;
+}
+function polyLen(p){
+  let d=0;
+  for(let i=0;i+1<p.length;i++) d += Math.hypot(p[i+1][0]-p[i][0], p[i+1][1]-p[i][1]);
+  return d;
 }
 function polylinesToPath(list){
   let d="";
@@ -919,6 +934,7 @@ function render(){
   const order = ["water","rail","minor","street","primary","major","one"];
   const gapSegs = [];                 // street pieces inside the symbol → hatch holes
   const optimise = $("optimise").checked;
+  const minLenU = $("minlenOn").checked ? (+$("minlen").value) * fmt.unitsPerMm : 0;
   let lastPen = [0,0];                // where the head ends up, to chain groups
   for(const key of order){
     if(!buckets[key]) continue;
@@ -952,6 +968,9 @@ function render(){
       }
       for(const run of stitchSegs(kept)) polys.push(...lineToPolylines(run, circle));
     }
+    // Drop stubs and stray fragments: below a few mm they read as artefacts
+    // rather than as streets.
+    if(minLenU > 0) polys = polys.filter(p => polyLen(p) >= minLenU);
     lastGeom.streets.push({ polys, rel: weighted ? (WEIGHT[key]||1) : 1 });
     if(optimise) polys = orderPolylines(polys, lastPen);
     if(polys.length) lastPen = polys[polys.length-1][polys[polys.length-1].length-1];
@@ -1134,6 +1153,22 @@ function addRibbon(tris, pts, w, z0, z1, clamp){
   triAddQuad(tris, lo(L[0]), lo(R[0]), hi(R[0]), hi(L[0]));         // start cap
   triAddQuad(tris, lo(R[e]), lo(L[e]), hi(L[e]), hi(R[e]));         // end cap
 }
+// Vertical cylinder, used as a round cap so a street never ends in a square
+// nub — and so an end-to-end change of road class steps over less harshly.
+function addDisc(tris, c, r, z0, z1){
+  const n = Math.max(10, Math.min(20, Math.round(r*12)));
+  const ring = [];
+  for(let i=0;i<n;i++){
+    const a = i/n*2*Math.PI;
+    ring.push([c[0]+r*Math.cos(a), c[1]+r*Math.sin(a)]);
+  }
+  for(let i=0;i<n;i++){
+    const p=ring[i], q=ring[(i+1)%n];
+    tris.push([[c[0],c[1],z1],[p[0],p[1],z1],[q[0],q[1],z1]]);
+    tris.push([[c[0],c[1],z0],[q[0],q[1],z0],[p[0],p[1],z0]]);
+    triAddQuad(tris, [p[0],p[1],z0],[q[0],q[1],z0],[q[0],q[1],z1],[p[0],p[1],z1]);
+  }
+}
 // Rotated cuboid along a→b (2D mm), given width and z-range.
 function addBar(tris, a, b, w, z0, z1, clamp){
   const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy);
@@ -1236,6 +1271,12 @@ function buildTris(part){         // "all" | "plate" | "relief"
   const tris   = [];
   // keeps raised detail on the plate (see addBar)
   const cR = circle ? clipR()*k : 0, cCx = VBW/2*k, cCy = VBH/2*k;
+  // A road cut off at the plate border is not a dead end: it keeps its square
+  // end, otherwise a round cap would bulge past the plate.
+  const EPS = 0.05;
+  const onEdge = circle
+    ? (q => Math.abs(Math.hypot(q[0]-cCx, q[1]-cCy) - cR) < EPS)
+    : (q => q[0]<EPS || q[1]<EPS || q[0]>fmt.w-EPS || q[1]>fmt.h-EPS);
   const clamp = circle
     ? (q => { const dx=q[0]-cCx, dy=q[1]-cCy, d=Math.hypot(dx,dy);
               return d<=cR ? q : [cCx+dx/d*cR, cCy+dy/d*cR]; })
@@ -1259,11 +1300,15 @@ function buildTris(part){         // "all" | "plate" | "relief"
   if(part!=="plate"){
   const smooth = Math.max(0, Math.min(3, +$("smoothIter").value|0));
   for(const grp of streets){
-    const w = Math.min(roadW * (grp.rel/0.7), roadW*3);
+    // Plain rel/0.7 scaling capped major at 3x and left a 71% jump between
+    // neighbouring classes, which reads as a shoulder at every junction.
+    const w = roadW * (1 + 0.55*(grp.rel/0.7 - 1));
     for(const line of grp.polys){
       let pts = line.map(P);
       if(smooth > 0 && pts.length > 2) pts = chaikin(pts, smooth);
       addRibbon(tris, pts, w, baseT-sink, zTop, clamp);
+      for(const end of [pts[0], pts[pts.length-1]])
+        if(!onEdge(end)) addDisc(tris, end, w/2, baseT-sink, zTop);
     }
   }
   // symbol as a solid block
