@@ -187,9 +187,10 @@
     </div>
     <label class="check" style="margin-top:10px"><input type="checkbox" id="twocolor"> 2 kleuren (AMS): plaat en straten apart</label>
     <button id="dlstl" class="ghost" style="margin-top:4px" disabled>STL downloaden</button>
-    <div class="row" id="stl2" style="margin-top:4px; display:none">
-      <button id="dlplate"  class="ghost" disabled>1 · plaat</button>
-      <button id="dlrelief" class="ghost" disabled>2 · straten</button>
+    <button id="dl3mf" style="margin-top:4px; display:none" disabled>3MF downloaden</button>
+    <div class="row" id="stl2" style="margin-top:6px; display:none">
+      <button id="dlplate"  class="ghost" disabled>STL plaat</button>
+      <button id="dlrelief" class="ghost" disabled>STL straten</button>
     </div>
     <div id="stlinfo" class="status" style="margin-top:6px"></div>
 
@@ -1001,6 +1002,7 @@ function render(){
   stage.appendChild(svg);
   $("dl").disabled = false; $("dlstl").disabled = false;
   $("dlplate").disabled = false; $("dlrelief").disabled = false;
+  $("dl3mf").disabled = false;
 }
 
 // ---- Main action ----
@@ -1134,7 +1136,7 @@ function stlBinary(tris){
   return buf;
 }
 
-function buildSTL(part){          // "all" | "plate" | "relief"
+function buildTris(part){         // "all" | "plate" | "relief"
   if(!lastGeom) return null;
   part = part || "all";
   const {fmt, circle, streets, symPts, capSegs} = lastGeom;
@@ -1181,7 +1183,135 @@ function buildSTL(part){          // "all" | "plate" | "relief"
   if(capSegs) for(const s of capSegs) addBar(tris, P(s[0]), P(s[1]), roadW, baseT-sink, zTop, clamp);
   }
 
-  return {buf: stlBinary(tris), count: tris.length};
+  return tris;
+}
+
+function buildSTL(part){
+  const tris = buildTris(part);
+  return tris ? {buf: stlBinary(tris), count: tris.length} : null;
+}
+
+// ---- 3MF export -----------------------------------------------------------
+// STL carries no placement, so a slicer re-centres and drops every file onto
+// the bed: separate STLs never line up. 3MF keeps the transforms and holds
+// several parts inside one object, which is what multi-material needs.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for(let i=0;i<256;i++){
+    let c=i;
+    for(let k=0;k<8;k++) c = (c & 1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1);
+    t[i]=c>>>0;
+  }
+  return t;
+})();
+function crc32(buf){
+  let c = 0xFFFFFFFF;
+  for(let i=0;i<buf.length;i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c>>>8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+async function deflateRaw(bytes){
+  try{
+    const cs = new CompressionStream("deflate-raw");
+    const buf = await new Response(new Blob([bytes]).stream().pipeThrough(cs)).arrayBuffer();
+    return new Uint8Array(buf);
+  }catch(e){ return null; }                       // fall back to stored
+}
+// Minimal ZIP writer (3MF is a ZIP container).
+async function makeZip(files){
+  const enc = new TextEncoder();
+  const chunks = [], central = [];
+  let offset = 0;
+  for(const f of files){
+    const raw = enc.encode(f.text);
+    const crc = crc32(raw);
+    let data = await deflateRaw(raw), method = 8;
+    if(!data || data.length >= raw.length){ data = raw; method = 0; }
+    const name = enc.encode(f.name);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
+    lh.setUint16(6, 0, true);          lh.setUint16(8, method, true);
+    lh.setUint16(10, 0, true);         lh.setUint16(12, 0x21, true);   // 1980-01-01
+    lh.setUint32(14, crc, true);       lh.setUint32(18, data.length, true);
+    lh.setUint32(22, raw.length, true);lh.setUint16(26, name.length, true);
+    lh.setUint16(28, 0, true);
+    chunks.push(new Uint8Array(lh.buffer), name, data);
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0, true);          cd.setUint16(10, method, true);
+    cd.setUint16(12, 0, true);         cd.setUint16(14, 0x21, true);
+    cd.setUint32(16, crc, true);       cd.setUint32(20, data.length, true);
+    cd.setUint32(24, raw.length, true);cd.setUint16(28, name.length, true);
+    cd.setUint16(30, 0, true);         cd.setUint16(32, 0, true);
+    cd.setUint16(34, 0, true);         cd.setUint16(36, 0, true);
+    cd.setUint32(38, 0, true);         cd.setUint32(42, offset, true);
+    central.push(new Uint8Array(cd.buffer), name);
+    offset += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((n,c)=>n+c.length, 0);
+  const eo = new DataView(new ArrayBuffer(22));
+  eo.setUint32(0, 0x06054b50, true);
+  eo.setUint16(8, files.length, true); eo.setUint16(10, files.length, true);
+  eo.setUint32(12, cdSize, true);      eo.setUint32(16, offset, true);
+  eo.setUint16(20, 0, true);
+  const all = [...chunks, ...central, new Uint8Array(eo.buffer)];
+  return new Blob(all, {type:"model/3mf"});
+}
+// Triangle soup -> 3MF mesh XML, sharing identical vertices.
+function meshXML(tris){
+  const map = new Map(), verts = [], faces = [];
+  const key = p => p[0].toFixed(4)+","+p[1].toFixed(4)+","+p[2].toFixed(4);
+  for(const t of tris){
+    const ids = t.map(p => {
+      const k = key(p);
+      let i = map.get(k);
+      if(i === undefined){ i = verts.length; map.set(k, i); verts.push(p); }
+      return i;
+    });
+    if(ids[0]===ids[1] || ids[1]===ids[2] || ids[0]===ids[2]) continue;   // degenerate
+    faces.push(ids);
+  }
+  const v = verts.map(p=>'<vertex x="'+p[0].toFixed(4)+'" y="'+p[1].toFixed(4)+'" z="'+p[2].toFixed(4)+'"/>').join("");
+  const f = faces.map(i=>'<triangle v1="'+i[0]+'" v2="'+i[1]+'" v3="'+i[2]+'"/>').join("");
+  return {xml:"<mesh><vertices>"+v+"</vertices><triangles>"+f+"</triangles></mesh>",
+          verts:verts.length, faces:faces.length};
+}
+// One object holding each part as a component: stays aligned, stays separable.
+async function build3MF(parts){
+  const meshes = parts.map(p => ({name:p.name, ...meshXML(p.tris)}));
+  let res = "";
+  meshes.forEach((m,i)=>{
+    res += '<object id="'+(i+1)+'" type="model" name="'+m.name+'">'+m.xml+'</object>';
+  });
+  const asmId = meshes.length + 1;
+  res += '<object id="'+asmId+'" type="model" name="Kaart"><components>';
+  meshes.forEach((m,i)=>{ res += '<component objectid="'+(i+1)+'"/>'; });
+  res += '</components></object>';
+
+  const model =
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<model unit="millimeter" xml:lang="en-US" ' +
+    'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">' +
+    '<metadata name="Application">CityMapLaser</metadata>' +
+    '<resources>' + res + '</resources>' +
+    '<build><item objectid="' + asmId + '"/></build>' +
+    '</model>';
+
+  const blob = await makeZip([
+    { name:"[Content_Types].xml", text:
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>' +
+      '</Types>' },
+    { name:"_rels/.rels", text:
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Target="/3D/3dmodel.model" Id="rel0" ' +
+      'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>' +
+      '</Relationships>' },
+    { name:"3D/3dmodel.model", text: model }
+  ]);
+  return { blob, faces: meshes.reduce((n,m)=>n+m.faces,0), verts: meshes.reduce((n,m)=>n+m.verts,0) };
 }
 
 // ---- Download ----
@@ -1240,11 +1370,36 @@ function saveSTL(part, suffix){
 $("twocolor").onchange = () => {
   const two = $("twocolor").checked;
   $("stl2").style.display  = two ? "flex" : "none";
+  $("dl3mf").style.display = two ? "block" : "none";
   $("dlstl").style.display = two ? "none" : "block";
   $("stlinfo").textContent = two
-    ? "Laad in Bambu Studio bestand 1, rechtsklik → Onderdeel toevoegen → bestand 2."
+    ? "3MF houdt de uitlijning vast; losse STL's worden door de slicer op het bed gelegd."
     : "";
   $("stlinfo").className = "status";
+};
+$("dl3mf").onclick = async () => {
+  if(!lastGeom) return;
+  $("stlinfo").textContent = "3MF bouwen…"; $("stlinfo").className = "status";
+  try{
+    const t0 = performance.now();
+    const {blob, faces} = await build3MF([
+      { name:"Plaat",   tris: buildTris("plate")  },
+      { name:"Straten", tris: buildTris("relief") }
+    ]);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = stlName("").replace(/\.stl$/, "") + ".3mf";
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+    const mb = blob.size/1048576;
+    $("stlinfo").textContent = a.download + " · 2 onderdelen · " +
+      faces.toLocaleString("nl") + " driehoeken · " + mb.toFixed(1) + " MB · " +
+      Math.round(performance.now()-t0) + " ms";
+    $("stlinfo").className = "status ok";
+  }catch(err){
+    $("stlinfo").textContent = "3MF mislukt: " + err.message;
+    $("stlinfo").className = "status err";
+  }
 };
 $("dlstl").onclick   = () => saveSTL("all",    "_map");
 $("dlplate").onclick = () => saveSTL("plate",  "_1_plaat");

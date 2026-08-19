@@ -45,15 +45,16 @@ breedte van de dunste straat (houd die minstens ~2× je nozzle, anders print hij
 
 ### Twee kleuren (AMS)
 
-Zet **2 kleuren** aan en je krijgt twee knoppen: `_1_plaat.stl` en `_2_straten.stl`.
-Beide staan in dezelfde coördinaten en sluiten exact op elkaar aan op de bovenkant
-van de plaat — geen overlappende volumes, zodat elk filament z’n eigen gebied heeft.
+Zet **2 kleuren** aan en gebruik **3MF downloaden**. Een STL bevat geen positie:
+elke slicer centreert het model en legt het op het bed, dus twee losse STL-bestanden
+lijnen na import nooit meer uit. 3MF bewaart de transformaties en zet beide delen
+als onderdelen in één object.
 
-In Bambu Studio: laad bestand 1, rechtsklik op het object → *Onderdeel toevoegen →
-bestand laden* → bestand 2, en wijs per onderdeel een filament toe.
+In Bambu Studio: open het 3MF, en wijs in de objectenlijst per onderdeel
+(*Plaat* en *Straten*) een filament toe.
 
-Elk bestand heeft een eigen knop omdat browsers een tweede automatische download
-blokkeren.
+De losse STL-knoppen staan er nog voor workflows die dat willen, maar dan moet je
+de delen zelf positioneren.
 
 De onderdelen zijn losse gesloten volumes die elkaar overlappen; slicers voegen die
 vanzelf samen. Het reliëf zakt 0,2 mm in de plaat zodat er altijd overlap is, en
