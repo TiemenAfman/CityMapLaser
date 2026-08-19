@@ -195,7 +195,7 @@
       <input id="smoothIter" type="range" min="0" max="3" step="1" value="2">
       <output id="smoothOut">2</output>
     </div>
-    <label class="check" style="margin-top:10px"><input type="checkbox" id="rimOn"> Rand voor lijst</label>
+    <label class="check" style="margin-top:10px"><input type="checkbox" id="rimOn"> Uitstekende plaatrand (voor lijst)</label>
     <div class="range">
       <input id="rimMm" type="range" min="1" max="10" step="0.5" value="3">
       <output id="rimOut">3.0 mm</output>
@@ -832,10 +832,7 @@ function layoutCaption(fmt, circle){
   if(!lines.length) return null;
 
   let cap = Math.max((+$("capmm").value)*fmt.unitsPerMm, 6);   // cap height in viewBox units
-  // ~4 mm margin, but stay clear of the raised border if there is one, or the
-  // caption would run into it on the printed model.
-  const rimU = $("rimOn").checked ? (+$("rimMm").value + 1.5) * fmt.unitsPerMm : 0;
-  const pad = Math.max(4*fmt.unitsPerMm, rimU, 6);
+  const pad = Math.max(4*fmt.unitsPerMm, 6);                   // ~4 mm margin
   let x0, xMax, yBottom;
   if(circle){
     const r=clipR(), cx=VBW/2, cy=VBH/2;
@@ -1162,23 +1159,6 @@ function addRibbon(tris, pts, w, z0, z1, clamp){
   triAddQuad(tris, lo(L[0]), lo(R[0]), hi(R[0]), hi(L[0]));         // start cap
   triAddQuad(tris, lo(R[e]), lo(L[e]), hi(L[e]), hi(R[e]));         // end cap
 }
-// Ring wall between two radii — the border for a round plate.
-function addAnnulus(tris, cx, cy, rOut, rIn, z0, z1, n){
-  n = n || 180;
-  const O=[], I=[];
-  for(let i=0;i<n;i++){
-    const a = i/n*2*Math.PI, c=Math.cos(a), s2=Math.sin(a);
-    O.push([cx+rOut*c, cy+rOut*s2]);
-    I.push([cx+rIn*c,  cy+rIn*s2]);
-  }
-  for(let i=0;i<n;i++){
-    const j=(i+1)%n;
-    triAddQuad(tris, [O[i][0],O[i][1],z1],[O[j][0],O[j][1],z1],[I[j][0],I[j][1],z1],[I[i][0],I[i][1],z1]);
-    triAddQuad(tris, [I[i][0],I[i][1],z0],[I[j][0],I[j][1],z0],[O[j][0],O[j][1],z0],[O[i][0],O[i][1],z0]);
-    triAddQuad(tris, [O[j][0],O[j][1],z0],[O[j][0],O[j][1],z1],[O[i][0],O[i][1],z1],[O[i][0],O[i][1],z0]);
-    triAddQuad(tris, [I[i][0],I[i][1],z0],[I[i][0],I[i][1],z1],[I[j][0],I[j][1],z1],[I[j][0],I[j][1],z0]);
-  }
-}
 // Vertical cylinder, used as a round cap so a street never ends in a square
 // nub — and so an end-to-end change of road class steps over less harshly.
 function addDisc(tris, c, r, z0, z1, clamp){
@@ -1290,7 +1270,11 @@ function buildTris(part){         // "all" | "plate" | "relief"
   part = part || "all";
   const {fmt, circle, streets, symPts, capSegs} = lastGeom;
   const k = 1/fmt.unitsPerMm;                      // viewBox units → mm
-  const P = p => [p[0]*k, (VBH-p[1])*k];           // flip Y so north points up
+  // Mounting lip: the plate runs on past the map on every side, so that
+  // overhang can sit in the groove of a frame. The map itself keeps the exact
+  // size you asked for; only the plate grows by 2x the lip.
+  const lip = $("rimOn").checked ? Math.max(0, +$("rimMm").value) : 0;
+  const P = p => [p[0]*k + lip, (VBH-p[1])*k + lip];   // flip Y, inset by the lip
   const baseT  = +$("baseMm").value;
   const relief = +$("reliefMm").value;
   const roadW  = +$("roadMm").value;
@@ -1298,29 +1282,30 @@ function buildTris(part){         // "all" | "plate" | "relief"
   const sink   = part==="all" ? SINK : 0;   // overlap only makes sense in one colour
   const tris   = [];
   // keeps raised detail on the plate (see addBar)
-  const cR = circle ? clipR()*k : 0, cCx = VBW/2*k, cCy = VBH/2*k;
+  const cR = circle ? clipR()*k : 0, cCx = VBW/2*k + lip, cCy = VBH/2*k + lip;
   // A road cut off at the plate border is not a dead end: it keeps its square
   // end, otherwise a round cap would bulge past the plate.
   const EPS = 0.05;
   const onEdge = circle
     ? (q => Math.abs(Math.hypot(q[0]-cCx, q[1]-cCy) - cR) < EPS)
-    : (q => q[0]<EPS || q[1]<EPS || q[0]>fmt.w-EPS || q[1]>fmt.h-EPS);
+    : (q => q[0]<lip+EPS || q[1]<lip+EPS || q[0]>lip+fmt.w-EPS || q[1]>lip+fmt.h-EPS);
   const clamp = circle
     ? (q => { const dx=q[0]-cCx, dy=q[1]-cCy, d=Math.hypot(dx,dy);
               return d<=cR ? q : [cCx+dx/d*cR, cCy+dy/d*cR]; })
-    : (q => [Math.min(Math.max(q[0],0),fmt.w), Math.min(Math.max(q[1],0),fmt.h)]);
+    : (q => [Math.min(Math.max(q[0],lip),lip+fmt.w), Math.min(Math.max(q[1],lip),lip+fmt.h)]);
 
   // base plate
   if(part!=="relief"){
   if(circle){
-    const r=clipR()*k, cx=VBW/2*k, cy=VBH/2*k, N=180, ring=[];
+    const r=cR+lip, N=180, ring=[];
     for(let i=0;i<N;i++){
       const a=i/N*2*Math.PI;
-      ring.push([cx+r*Math.cos(a), cy+r*Math.sin(a)]);
+      ring.push([cCx+r*Math.cos(a), cCy+r*Math.sin(a)]);
     }
     addExtrusion(tris, ring, 0, baseT);
   }else{
-    addExtrusion(tris, [[0,0],[fmt.w,0],[fmt.w,fmt.h],[0,fmt.h]], 0, baseT);
+    const W=fmt.w+2*lip, H=fmt.h+2*lip;
+    addExtrusion(tris, [[0,0],[W,0],[W,H],[0,H]], 0, baseT);
   }
   }
 
@@ -1337,22 +1322,6 @@ function buildTris(part){         // "all" | "plate" | "relief"
       addRibbon(tris, pts, w, baseT-sink, zTop, clamp);
       for(const end of [pts[0], pts[pts.length-1]])
         if(!onEdge(end)) addDisc(tris, end, w/2, baseT-sink, zTop, clamp);
-    }
-  }
-  // Raised border, level with the streets, so the model has a solid edge to sit
-  // in a picture frame. It belongs to the relief part: keeping it out of the
-  // plate means no extra filament changes above the plate top.
-  if($("rimOn").checked){
-    const rim = Math.max(0.4, +$("rimMm").value);
-    if(circle){
-      const r = clipR()*k;
-      addAnnulus(tris, cCx, cCy, r, Math.max(r-rim, 0.2), baseT-sink, zTop);
-    }else{
-      const W=fmt.w, H=fmt.h, t=Math.min(rim, Math.min(W,H)/2 - 0.2);
-      addExtrusion(tris, [[0,0],[t,0],[t,H],[0,H]],           baseT-sink, zTop);   // left
-      addExtrusion(tris, [[W-t,0],[W,0],[W,H],[W-t,H]],       baseT-sink, zTop);   // right
-      addExtrusion(tris, [[t,0],[W-t,0],[W-t,t],[t,t]],       baseT-sink, zTop);   // bottom
-      addExtrusion(tris, [[t,H-t],[W-t,H-t],[W-t,H],[t,H]],   baseT-sink, zTop);   // top
     }
   }
   // symbol as a solid block

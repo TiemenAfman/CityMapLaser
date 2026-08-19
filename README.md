@@ -48,10 +48,10 @@ als verhoogd reliëf. Straten zijn doorlopende linten met verstekhoeken en ronde
 uiteinden; wegen die op de plaatrand worden afgekapt houden een recht einde. Instelbaar: dikte grondplaat, hoogte van het reliëf en de
 breedte van de dunste straat (houd die minstens ~2× je nozzle, anders print hij niet).
 
-Met **Rand voor lijst** krijg je een opstaande rand rondom, op dezelfde hoogte als
-de straten en met instelbare breedte (standaard 3 mm), zodat het model in een lijst
-gemonteerd kan worden. Het onderschrift schuift automatisch mee zodat het vrij van
-de rand blijft.
+Met **Uitstekende plaatrand** groeit alleen de grondplaat met de ingestelde breedte
+(standaard 3 mm) aan alle kanten. De kaart houdt exact het formaat dat je invult:
+vul je 200 x 200 in, dan is de stratenkaart 200 x 200 en de plaat 206 x 206. Die
+uitstekende rand valt in de sleuf van een lijst.
 
 ### Twee kleuren (AMS)
 
