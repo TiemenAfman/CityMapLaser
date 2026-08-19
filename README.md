@@ -50,8 +50,11 @@ elke slicer centreert het model en legt het op het bed, dus twee losse STL-besta
 lijnen na import nooit meer uit. 3MF bewaart de transformaties en zet beide delen
 als onderdelen in één object.
 
-In Bambu Studio: open het 3MF, en wijs in de objectenlijst per onderdeel
-(*Plaat* en *Straten*) een filament toe.
+In Bambu Studio: open het 3MF. Het komt binnen als één object *Kaart* met de
+onderdelen *Plaat* (filament 1) en *Straten* (filament 2), al toegewezen.
+
+Gebruik **niet** “Splitsen naar objecten”: het reliëf bestaat uit duizenden losse
+shells (een balkje per wegsegment), dus dat maakt er duizenden objecten van.
 
 De losse STL-knoppen staan er nog voor workflows die dat willen, maar dan moet je
 de delen zelf positioneren.

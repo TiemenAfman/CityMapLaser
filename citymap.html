@@ -1296,6 +1296,22 @@ async function build3MF(parts){
     '<build><item objectid="' + asmId + '"/></build>' +
     '</model>';
 
+  // Bambu Studio reads the part structure from this file. Without it the
+  // components are flattened into one lump and you cannot assign a second
+  // filament. Part ids must match the component objectids above.
+  let cfg = '<?xml version="1.0" encoding="UTF-8"?>\n<config>' +
+            '<object id="' + asmId + '">' +
+            '<metadata key="name" value="Kaart"/>' +
+            '<metadata key="extruder" value="1"/>';
+  meshes.forEach((m,i)=>{
+    cfg += '<part id="' + (i+1) + '" subtype="normal_part">' +
+           '<metadata key="name" value="' + m.name + '"/>' +
+           '<metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>' +
+           '<metadata key="extruder" value="' + (i+1) + '"/>' +
+           '</part>';
+  });
+  cfg += '</object></config>';
+
   const blob = await makeZip([
     { name:"[Content_Types].xml", text:
       '<?xml version="1.0" encoding="UTF-8"?>\n' +
@@ -1309,7 +1325,8 @@ async function build3MF(parts){
       '<Relationship Target="/3D/3dmodel.model" Id="rel0" ' +
       'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>' +
       '</Relationships>' },
-    { name:"3D/3dmodel.model", text: model }
+    { name:"3D/3dmodel.model", text: model },
+    { name:"Metadata/model_settings.config", text: cfg }
   ]);
   return { blob, faces: meshes.reduce((n,m)=>n+m.faces,0), verts: meshes.reduce((n,m)=>n+m.verts,0) };
 }
