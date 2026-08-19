@@ -1,8 +1,8 @@
 # CityMapLaser
 
-Genereert een zwart-wit stratenkaart van een plaats of adres als **SVG**, bedoeld om te
-laseren (getest met LaserGRBL). Draait volledig lokaal in de browser; kaartdata komt
-live van OpenStreetMap.
+Genereert een stratenkaart van een plaats of adres, als **SVG** om te laseren
+(getest met LaserGRBL) of als **STL** om te 3D-printen. Draait volledig lokaal in
+de browser; kaartdata komt live van OpenStreetMap.
 
 ## Gebruik
 
@@ -36,6 +36,16 @@ Een laser volgt lijnen en negeert SVG-`fill`. Daar is de uitvoer op afgestemd:
   lijnen buiten de plank in het bestand staan.
 - **Transportbewegingen geoptimaliseerd.** OSM levert wegen in willekeurige volgorde;
   herordenen scheelt in de praktijk 86–95% loze verplaatsing.
+
+## 3D printen
+
+De STL-export maakt een grondplaat met de straten, het symbool en het onderschrift
+als verhoogd reliëf. Instelbaar: dikte grondplaat, hoogte van het reliëf en de
+breedte van de dunste straat (houd die minstens ~2× je nozzle, anders print hij niet).
+
+De onderdelen zijn losse gesloten volumes die elkaar overlappen; slicers voegen die
+vanzelf samen. Het reliëf zakt 0,2 mm in de plaat zodat er altijd overlap is, en
+uitsteeksels worden op de plaat teruggeklemd zodat er niets in de lucht hangt.
 
 ## Data
 

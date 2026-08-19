@@ -168,6 +168,27 @@
     <button id="dl" class="ghost" style="margin-top:10px" disabled>SVG downloaden</button>
   </fieldset>
 
+  <fieldset>
+    <legend>3D printen (STL)</legend>
+    <label>Dikte grondplaat</label>
+    <div class="range">
+      <input id="baseMm" type="range" min="0.8" max="6" step="0.2" value="2">
+      <output id="baseOut">2.0 mm</output>
+    </div>
+    <label style="margin-top:6px">Hoogte straten</label>
+    <div class="range">
+      <input id="reliefMm" type="range" min="0.4" max="4" step="0.2" value="1.2">
+      <output id="reliefOut">1.2 mm</output>
+    </div>
+    <label style="margin-top:6px">Breedte dunste straat</label>
+    <div class="range">
+      <input id="roadMm" type="range" min="0.4" max="2" step="0.1" value="0.8">
+      <output id="roadOut">0.8 mm</output>
+    </div>
+    <button id="dlstl" class="ghost" style="margin-top:10px" disabled>STL downloaden</button>
+    <div id="stlinfo" class="status" style="margin-top:6px"></div>
+
+
   <div class="foot">
     Data © OpenStreetMap-bijdragers (ODbL).<br>
     Lokaal bestand — data komt live van Nominatim &amp; Overpass.
@@ -184,6 +205,7 @@
 const $ = id => document.getElementById(id);
 const SVGNS = "http://www.w3.org/2000/svg";
 let lastData = null;      // {ways:[{cls, pts:[[lat,lon]..]}], center, radiusM}
+let lastGeom = null;      // geometry of the last render, reused by the STL export
 const VB = 1000;          // viewBox units along the LONGEST side
 let VBW = 1000, VBH = 1000;   // actual viewBox, derived from the mm format
 // Read the mm format and set the viewBox aspect to match the board.
@@ -867,6 +889,9 @@ function render(){
     Math.max(a[0],b[0])>=txtBox[0] && Math.min(a[0],b[0])<=txtBox[1] &&
     Math.max(a[1],b[1])>=txtBox[2] && Math.min(a[1],b[1])<=txtBox[3];
 
+  // Remember the drawn geometry so the STL export builds exactly what you see.
+  lastGeom = { fmt, circle, streets:[], symPts:null, capSegs:null };
+
   const order = ["water","rail","minor","street","primary","major","one"];
   const gapSegs = [];                 // street pieces inside the symbol → hatch holes
   const optimise = $("optimise").checked;
@@ -903,6 +928,7 @@ function render(){
       }
       for(const seg of kept) polys.push(...lineToPolylines(seg, circle));
     }
+    lastGeom.streets.push({ polys, rel: weighted ? (WEIGHT[key]||1) : 1 });
     if(optimise) polys = orderPolylines(polys, lastPen);
     if(polys.length) lastPen = polys[polys.length-1][polys[polys.length-1].length-1];
     const path = document.createElementNS(SVGNS,"path");
@@ -937,6 +963,7 @@ function render(){
     outline.setAttribute("stroke-width",lw.toFixed(2));
     grp.appendChild(outline);
     svg.appendChild(grp);
+    lastGeom.symPts = pts;
   }
 
   if(capLayout){
@@ -949,6 +976,7 @@ function render(){
     const p = document.createElementNS(SVGNS,"path");
     p.setAttribute("d", optimise ? optimisePathData(d, lastPen) : d);
     cap_g.appendChild(p);
+    lastGeom.capSegs = capLayout.segs;
     svg.appendChild(cap_g);
   }
 
@@ -966,7 +994,7 @@ function render(){
   const stage = $("stage");
   stage.innerHTML = "";
   stage.appendChild(svg);
-  $("dl").disabled = false;
+  $("dl").disabled = false; $("dlstl").disabled = false;
 }
 
 // ---- Main action ----
@@ -1003,6 +1031,147 @@ $("go").onclick = async () => {
   }
 };
 
+
+// ---- 3D export (STL) ------------------------------------------------------
+// Builds a base plate with the streets, symbol and caption raised on top.
+// Each element is its own closed solid; slicers union overlapping solids, and
+// the raised parts are sunk slightly into the plate so they always overlap.
+const SINK = 0.2;                                  // mm the relief digs into the plate
+
+function triAddQuad(t, a, b, c, d){ t.push([a,b,c],[a,c,d]); }
+
+// Rotated cuboid along a→b (2D mm), given width and z-range.
+function addBar(tris, a, b, w, z0, z1, clamp){
+  const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy);
+  if(L<1e-9) return;
+  const ux=dx/L, uy=dy/L, hx=-uy*w/2, hy=ux*w/2;
+  const e=w/2;                                     // extend ends so joints overlap
+  const A=[a[0]-ux*e, a[1]-uy*e], B=[b[0]+ux*e, b[1]+uy*e];
+  let p=[[A[0]-hx,A[1]-hy],[B[0]-hx,B[1]-hy],[B[0]+hx,B[1]+hy],[A[0]+hx,A[1]+hy]];
+  // The end extension can poke past the plate edge, leaving bits hanging in
+  // mid-air. Pull any stray corner back onto the plate.
+  if(clamp) p=p.map(clamp);
+  const lo=p.map(q=>[q[0],q[1],z0]), hi=p.map(q=>[q[0],q[1],z1]);
+  triAddQuad(tris, hi[0],hi[1],hi[2],hi[3]);       // top
+  triAddQuad(tris, lo[3],lo[2],lo[1],lo[0]);       // bottom
+  for(let i=0;i<4;i++){
+    const j=(i+1)%4;
+    triAddQuad(tris, lo[i],lo[j],hi[j],hi[i]);     // sides
+  }
+}
+
+// Ear clipping for a simple polygon (star and heart are concave but simple).
+function triangulate(poly){
+  const n=poly.length;
+  if(n<3) return [];
+  let area=0;
+  for(let i=0;i<n;i++){ const j=(i+1)%n; area += poly[i][0]*poly[j][1]-poly[j][0]*poly[i][1]; }
+  const pts = area<0 ? poly.slice().reverse() : poly.slice();   // force CCW
+  const inTri=(p,a,b,c)=>{
+    const d1=(p[0]-b[0])*(a[1]-b[1])-(a[0]-b[0])*(p[1]-b[1]);
+    const d2=(p[0]-c[0])*(b[1]-c[1])-(b[0]-c[0])*(p[1]-c[1]);
+    const d3=(p[0]-a[0])*(c[1]-a[1])-(c[0]-a[0])*(p[1]-a[1]);
+    return !(((d1<0)||(d2<0)||(d3<0)) && ((d1>0)||(d2>0)||(d3>0)));
+  };
+  let idx=pts.map((_,i)=>i);
+  const tris=[];
+  let guard=0;
+  while(idx.length>3 && guard++ < 20000){
+    let clipped=false;
+    for(let i=0;i<idx.length;i++){
+      const i0=idx[(i-1+idx.length)%idx.length], i1=idx[i], i2=idx[(i+1)%idx.length];
+      const a=pts[i0], b=pts[i1], c=pts[i2];
+      if((b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]) <= 0) continue;   // reflex
+      let ok=true;
+      for(const k of idx){
+        if(k===i0||k===i1||k===i2) continue;
+        if(inTri(pts[k],a,b,c)){ ok=false; break; }
+      }
+      if(!ok) continue;
+      tris.push([a,b,c]); idx.splice(i,1); clipped=true; break;
+    }
+    if(!clipped) break;                             // degenerate: stop rather than hang
+  }
+  if(idx.length===3) tris.push([pts[idx[0]],pts[idx[1]],pts[idx[2]]]);
+  return tris;
+}
+
+// Extrude a closed 2D polygon between two heights.
+function addExtrusion(tris, poly, z0, z1){
+  const flat=triangulate(poly);
+  for(const t of flat){
+    tris.push([[t[0][0],t[0][1],z1],[t[1][0],t[1][1],z1],[t[2][0],t[2][1],z1]]);
+    tris.push([[t[2][0],t[2][1],z0],[t[1][0],t[1][1],z0],[t[0][0],t[0][1],z0]]);
+  }
+  for(let i=0;i<poly.length;i++){
+    const a=poly[i], b=poly[(i+1)%poly.length];
+    triAddQuad(tris, [a[0],a[1],z0],[b[0],b[1],z0],[b[0],b[1],z1],[a[0],a[1],z1]);
+  }
+}
+
+function stlBinary(tris){
+  const buf=new ArrayBuffer(84+50*tris.length);
+  const dv=new DataView(buf);
+  dv.setUint32(80, tris.length, true);
+  let o=84;
+  for(const t of tris){
+    const ux=t[1][0]-t[0][0], uy=t[1][1]-t[0][1], uz=t[1][2]-t[0][2];
+    const vx=t[2][0]-t[0][0], vy=t[2][1]-t[0][1], vz=t[2][2]-t[0][2];
+    let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    const L=Math.hypot(nx,ny,nz)||1; nx/=L; ny/=L; nz/=L;
+    dv.setFloat32(o,nx,true); dv.setFloat32(o+4,ny,true); dv.setFloat32(o+8,nz,true); o+=12;
+    for(const p of t){
+      dv.setFloat32(o,p[0],true); dv.setFloat32(o+4,p[1],true); dv.setFloat32(o+8,p[2],true); o+=12;
+    }
+    dv.setUint16(o,0,true); o+=2;
+  }
+  return buf;
+}
+
+function buildSTL(){
+  if(!lastGeom) return null;
+  const {fmt, circle, streets, symPts, capSegs} = lastGeom;
+  const k = 1/fmt.unitsPerMm;                      // viewBox units → mm
+  const P = p => [p[0]*k, (VBH-p[1])*k];           // flip Y so north points up
+  const baseT  = +$("baseMm").value;
+  const relief = +$("reliefMm").value;
+  const roadW  = +$("roadMm").value;
+  const zTop   = baseT + relief;
+  const tris   = [];
+  // keeps raised detail on the plate (see addBar)
+  const cR = circle ? clipR()*k : 0, cCx = VBW/2*k, cCy = VBH/2*k;
+  const clamp = circle
+    ? (q => { const dx=q[0]-cCx, dy=q[1]-cCy, d=Math.hypot(dx,dy);
+              return d<=cR ? q : [cCx+dx/d*cR, cCy+dy/d*cR]; })
+    : (q => [Math.min(Math.max(q[0],0),fmt.w), Math.min(Math.max(q[1],0),fmt.h)]);
+
+  // base plate
+  if(circle){
+    const r=clipR()*k, cx=VBW/2*k, cy=VBH/2*k, N=180, ring=[];
+    for(let i=0;i<N;i++){
+      const a=i/N*2*Math.PI;
+      ring.push([cx+r*Math.cos(a), cy+r*Math.sin(a)]);
+    }
+    addExtrusion(tris, ring, 0, baseT);
+  }else{
+    addExtrusion(tris, [[0,0],[fmt.w,0],[fmt.w,fmt.h],[0,fmt.h]], 0, baseT);
+  }
+
+  // streets, thicker for the bigger road classes
+  for(const grp of streets){
+    const w = Math.min(roadW * (grp.rel/0.7), roadW*3);
+    for(const line of grp.polys){
+      for(let i=0;i+1<line.length;i++) addBar(tris, P(line[i]), P(line[i+1]), w, baseT-SINK, zTop, clamp);
+    }
+  }
+  // symbol as a solid block
+  if(symPts) addExtrusion(tris, symPts.map(P), baseT-SINK, zTop);
+  // caption strokes
+  if(capSegs) for(const s of capSegs) addBar(tris, P(s[0]), P(s[1]), roadW, baseT-SINK, zTop, clamp);
+
+  return {buf: stlBinary(tris), count: tris.length};
+}
+
 // ---- Download ----
 $("dl").onclick = () => {
   const live = $("stage").querySelector("svg");
@@ -1019,5 +1188,36 @@ $("dl").onclick = () => {
   a.download = name + "_map.svg";
   a.click();
   URL.revokeObjectURL(a.href);
+};
+
+// ---- STL download ----
+["baseMm","reliefMm","roadMm"].forEach(id => {
+  const out = $(id.replace("Mm","Out"));
+  $(id).oninput = e => out.textContent = (+e.target.value).toFixed(1)+" mm";
+});
+$("dlstl").onclick = () => {
+  if(!lastGeom) return;
+  $("stlinfo").textContent = "STL bouwen…"; $("stlinfo").className = "status";
+  setTimeout(()=>{
+    try{
+      const t0 = performance.now();
+      const {buf, count} = buildSTL();
+      const mb = buf.byteLength/1048576;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([buf], {type:"model/stl"}));
+      const name = ($("place").value.trim().split(",")[0] || "kaart")
+                     .replace(/[^\w\- ]/g,"").replace(/\s+/g,"_");
+      a.download = name + "_map.stl";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      $("stlinfo").textContent =
+        `${count.toLocaleString("nl")} driehoeken · ${mb.toFixed(1)} MB · ${Math.round(performance.now()-t0)} ms`;
+      $("stlinfo").className = mb > 150 ? "status err" : "status ok";
+      if(mb > 150) $("stlinfo").textContent += " — erg groot, kleinere straal helpt";
+    }catch(err){
+      $("stlinfo").textContent = "STL mislukt: "+err.message;
+      $("stlinfo").className = "status err";
+    }
+  }, 20);
 };
 </script>
