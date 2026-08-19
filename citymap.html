@@ -185,6 +185,11 @@
       <input id="roadMm" type="range" min="0.4" max="2" step="0.1" value="0.8">
       <output id="roadOut">0.8 mm</output>
     </div>
+    <label style="margin-top:6px">Bochten afronden</label>
+    <div class="range">
+      <input id="smoothIter" type="range" min="0" max="3" step="1" value="2">
+      <output id="smoothOut">2</output>
+    </div>
     <label class="check" style="margin-top:10px"><input type="checkbox" id="twocolor"> 2 kleuren (AMS): plaat en straten apart</label>
     <button id="dlstl" class="ghost" style="margin-top:4px" disabled>STL downloaden</button>
     <button id="dl3mf" style="margin-top:4px; display:none" disabled>3MF downloaden</button>
@@ -545,6 +550,19 @@ function clipSegToRect(a, b, w, h){
 // Polyline -> path data. The geometry itself is always cut to the artwork
 // (circle or rectangle), so no path ever leaves the board and the exported SVG
 // needs no clipPath — laser software often ignores those.
+// Re-join consecutive segments that still share an endpoint after masking.
+function stitchSegs(segs){
+  const out=[]; let run=null;
+  for(const s of segs){
+    const last = run && run[run.length-1];
+    if(last && Math.abs(last[0]-s[0][0])<1e-6 && Math.abs(last[1]-s[0][1])<1e-6){
+      run.push(s[1]);
+    }else{
+      run=[s[0], s[1]]; out.push(run);
+    }
+  }
+  return out;
+}
 function lineToPolylines(pts, clip){
   const out=[]; let run=null;
   for(let i=0;i+1<pts.length;i++){
@@ -932,7 +950,7 @@ function render(){
         }
         kept=cleared;
       }
-      for(const seg of kept) polys.push(...lineToPolylines(seg, circle));
+      for(const run of stitchSegs(kept)) polys.push(...lineToPolylines(run, circle));
     }
     lastGeom.streets.push({ polys, rel: weighted ? (WEIGHT[key]||1) : 1 });
     if(optimise) polys = orderPolylines(polys, lastPen);
@@ -1048,6 +1066,74 @@ const SINK = 0.2;                                  // mm the relief digs into th
 
 function triAddQuad(t, a, b, c, d){ t.push([a,b,c],[a,c,d]); }
 
+// Chaikin corner cutting: turns the raw OSM vertices into a smooth curve.
+// Each pass replaces every corner with two points closer to the neighbours, so
+// one hard kink becomes a series of tiny ones that read as a real bend.
+function chaikin(pts, iters){
+  let p = pts;
+  for(let k=0;k<iters;k++){
+    const out=[p[0]];
+    for(let i=0;i+1<p.length;i++){
+      const a=p[i], b=p[i+1];
+      out.push([a[0]*0.75+b[0]*0.25, a[1]*0.75+b[1]*0.25]);
+      out.push([a[0]*0.25+b[0]*0.75, a[1]*0.25+b[1]*0.75]);
+    }
+    out.push(p[p.length-1]);
+    p = out;
+  }
+  return p;
+}
+// Left/right edge of a ribbon of width w, mitred at the joints. Without the
+// mitre each segment needs its own overhanging cap, which is what made the
+// bends look chewed.
+const MITRE_MIN = 0.35;                        // clamp: no spikes on hairpins
+function ribbonEdges(pts, h){
+  const n = pts.length, L = [], R = [];
+  const dir = (a,b) => { const dx=b[0]-a[0], dy=b[1]-a[1], l=Math.hypot(dx,dy)||1;
+                         return [dx/l, dy/l]; };
+  for(let i=0;i<n;i++){
+    let nx, ny, scale = 1;
+    if(i===0){            const d=dir(pts[0],pts[1]);       nx=-d[1]; ny=d[0]; }
+    else if(i===n-1){     const d=dir(pts[n-2],pts[n-1]);   nx=-d[1]; ny=d[0]; }
+    else{
+      const d1=dir(pts[i-1],pts[i]), d2=dir(pts[i],pts[i+1]);
+      const n1=[-d1[1],d1[0]], n2=[-d2[1],d2[0]];
+      let mx=n1[0]+n2[0], my=n1[1]+n2[1];
+      const len=Math.hypot(mx,my);
+      if(len<1e-9){ nx=n1[0]; ny=n1[1]; }       // doubles back on itself
+      else{
+        mx/=len; my/=len;
+        scale = 1/Math.max(mx*n1[0]+my*n1[1], MITRE_MIN);
+        nx=mx; ny=my;
+      }
+    }
+    L.push([pts[i][0]+nx*h*scale, pts[i][1]+ny*h*scale]);
+    R.push([pts[i][0]-nx*h*scale, pts[i][1]-ny*h*scale]);
+  }
+  return {L,R};
+}
+// One closed prism following the whole polyline: no per-segment overhangs, and
+// each street becomes a single shell instead of dozens of loose boxes.
+function addRibbon(tris, pts, w, z0, z1, clamp){
+  const q = [pts[0]];
+  for(let i=1;i<pts.length;i++){                // drop duplicate points
+    const p=pts[i], l=q[q.length-1];
+    if(Math.hypot(p[0]-l[0], p[1]-l[1]) > 1e-6) q.push(p);
+  }
+  if(q.length < 2) return;
+  let {L,R} = ribbonEdges(q, w/2);
+  if(clamp){ L=L.map(clamp); R=R.map(clamp); }
+  const lo = p => [p[0],p[1],z0], hi = p => [p[0],p[1],z1];
+  for(let i=0;i+1<q.length;i++){
+    triAddQuad(tris, hi(R[i]), hi(R[i+1]), hi(L[i+1]), hi(L[i]));   // top
+    triAddQuad(tris, lo(L[i]), lo(L[i+1]), lo(R[i+1]), lo(R[i]));   // bottom
+    triAddQuad(tris, hi(L[i]), hi(L[i+1]), lo(L[i+1]), lo(L[i]));   // left wall
+    triAddQuad(tris, lo(R[i]), lo(R[i+1]), hi(R[i+1]), hi(R[i]));   // right wall
+  }
+  const e=q.length-1;
+  triAddQuad(tris, lo(L[0]), lo(R[0]), hi(R[0]), hi(L[0]));         // start cap
+  triAddQuad(tris, lo(R[e]), lo(L[e]), hi(L[e]), hi(R[e]));         // end cap
+}
 // Rotated cuboid along a→b (2D mm), given width and z-range.
 function addBar(tris, a, b, w, z0, z1, clamp){
   const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy);
@@ -1171,10 +1257,13 @@ function buildTris(part){         // "all" | "plate" | "relief"
 
   // streets, thicker for the bigger road classes
   if(part!=="plate"){
+  const smooth = Math.max(0, Math.min(3, +$("smoothIter").value|0));
   for(const grp of streets){
     const w = Math.min(roadW * (grp.rel/0.7), roadW*3);
     for(const line of grp.polys){
-      for(let i=0;i+1<line.length;i++) addBar(tris, P(line[i]), P(line[i+1]), w, baseT-sink, zTop, clamp);
+      let pts = line.map(P);
+      if(smooth > 0 && pts.length > 2) pts = chaikin(pts, smooth);
+      addRibbon(tris, pts, w, baseT-sink, zTop, clamp);
     }
   }
   // symbol as a solid block
@@ -1350,6 +1439,7 @@ $("dl").onclick = () => {
 };
 
 // ---- STL download ----
+$("smoothIter").oninput = e => $("smoothOut").textContent = e.target.value;
 ["baseMm","reliefMm","roadMm"].forEach(id => {
   const out = $(id.replace("Mm","Out"));
   $(id).oninput = e => out.textContent = (+e.target.value).toFixed(1)+" mm";

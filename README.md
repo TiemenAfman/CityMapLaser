@@ -59,6 +59,11 @@ shells (een balkje per wegsegment), dus dat maakt er duizenden objecten van.
 De losse STL-knoppen staan er nog voor workflows die dat willen, maar dan moet je
 de delen zelf positioneren.
 
+Straten worden als één doorlopend lint per weg gebouwd, met verstek bij de knopen,
+en de lijn wordt eerst afgerond (**Bochten afronden**, 0–3). Dat vervangt de oude
+aanpak van een los doosje per wegsegment, waarbij de verlengde uiteinden bij elke
+bocht uitstaken.
+
 De onderdelen zijn losse gesloten volumes die elkaar overlappen; slicers voegen die
 vanzelf samen. Het reliëf zakt 0,2 mm in de plaat zodat er altijd overlap is, en
 uitsteeksels worden op de plaat teruggeklemd zodat er niets in de lucht hangt.
